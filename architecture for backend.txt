@@ -1,0 +1,91 @@
+fundamics-backend/
+├── docker/
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── nginx.conf
+├── alembic/
+│   ├── env.py
+│   ├── script.py.mako
+│   └── versions/
+├── src/
+│   ├── main.py
+│   ├── config.py
+│   ├── database.py
+│   ├── core/
+│   │   ├── security.py          # Argon2id password hashing, JWT encoding/decoding
+│   │   ├── dependencies.py      # get_db, get_current_user
+│   │   ├── permissions.py       # require_admin, require_teacher, require_student
+│   │   ├── exceptions.py        # App-wide uniform error handlers
+│   │   ├── pagination.py        # Standard PageParams & PaginatedResponse
+│   │   ├── middleware.py        # X-Request-ID, security headers, timing
+│   │   ├── rate_limit.py        # Sensitive endpoint rate limits (in-memory/Redis-ready)
+│   │   └── audit.py             # Audit decorator & recording utilities
+│   ├── models/                  # SQLAlchemy 2.0 Models
+│   │   ├── base.py              # TimeStampedUUIDModel
+│   │   ├── user.py              # User, Student, Teacher
+│   │   ├── academic.py          # Class, Batch, Subject, Enrollment
+│   │   ├── student_attendance.py# StudentAttendance, AttendanceImport
+│   │   ├── teacher_attendance.py# BiometricDevice, BiometricEvent, TeacherAttendance
+│   │   ├── exam_result.py       # Exam, Result
+│   │   ├── note_file.py         # FileRecord, Note
+│   │   ├── system.py            # AcademicCalendarEvent, NotificationRecord, AuditLog, InstituteSettings
+│   │   └── auth_session.py      # AuthSession, VerificationToken, PasswordResetToken
+│   ├── schemas/                 # Pydantic V2 Schemas (extra="forbid")
+│   │   ├── auth.py
+│   │   ├── user.py
+│   │   ├── academic.py
+│   │   ├── student_attendance.py
+│   │   ├── teacher_attendance.py
+│   │   ├── exam_result.py
+│   │   ├── note_file.py
+│   │   └── system.py
+│   ├── repositories/            # Database queries (parameterized, ORM-safe)
+│   │   ├── users.py
+│   │   ├── academics.py
+│   │   ├── attendance.py
+│   │   ├── results.py
+│   │   └── notes.py
+│   ├── services/                # Business logic, workflows & calculations
+│   │   ├── auth_service.py
+│   │   ├── user_service.py
+│   │   ├── student_attendance_service.py
+│   │   ├── biometric_service.py
+│   │   ├── storage_service.py
+│   │   ├── result_service.py
+│   │   ├── audit_service.py
+│   │   └── notification_service.py
+│   └── api/
+│       └── v1/
+│           ├── router.py
+│           ├── auth.py
+│           ├── admin/
+│           │   ├── users.py
+│           │   ├── academics.py
+│           │   ├── attendance.py
+│           │   ├── imports.py
+│           │   ├── teacher_attendance.py
+│           │   ├── exams.py
+│           │   ├── notes.py
+│           │   └── settings.py
+│           ├── student/
+│           │   ├── attendance.py
+│           │   ├── results.py
+│           │   └── notes.py
+│           ├── teacher/
+│           │   └── attendance.py
+│           └── integrations/
+│               └── biometric.py
+├── tests/
+│   ├── test_auth.py
+│   ├── test_permissions.py
+│   ├── test_students.py
+│   ├── test_attendance.py
+│   ├── test_excel_attendance.py
+│   ├── test_biometric.py
+│   ├── test_results.py
+│   └── test_notes.py
+├── .env.example
+├── .gitignore
+├── requirements.txt
+├── alembic.ini
+└── README.md

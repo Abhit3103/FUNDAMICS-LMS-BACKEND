@@ -1,0 +1,55 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: fundamics_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fundamics_app
+      POSTGRES_PASSWORD: fundamics_secure_pass
+      POSTGRES_DB: fundamics_lms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fundamics_app -d fundamics_lms"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: fundamics_api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://fundamics_app:fundamics_secure_pass@postgres:5432/fundamics_lms
+      SYNC_DATABASE_URL: postgresql://fundamics_app:fundamics_secure_pass@postgres:5432/fundamics_lms
+    volumes:
+      - private_storage:/app/storage/notes
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  nginx:
+    image: nginx:alpine
+    container_name: fundamics_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+  private_storage:
