@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: fundamics_app
       POSTGRES_PASSWORD: fundamics_secure_pass
       POSTGRES_DB: fundamics_lms
+    ports:
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

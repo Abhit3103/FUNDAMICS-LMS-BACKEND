@@ -1,4 +1,5 @@
 import asyncio
+import os
 from logging.config import fileConfig
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -15,9 +16,16 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+# Support targeted database migrations via environment variable (e.g. test DB) while preserving default settings.DATABASE_URL
+target_db_url = (
+    os.getenv("ALEMBIC_DATABASE_URL")
+    or os.getenv("TEST_DATABASE_URL")
+    or settings.DATABASE_URL
+)
 config.set_main_option(
     "sqlalchemy.url",
-    settings.DATABASE_URL.replace("%", "%%"),
+    target_db_url.replace("%", "%%"),
 )
 
 
