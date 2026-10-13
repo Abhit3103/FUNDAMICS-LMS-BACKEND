@@ -65,9 +65,12 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @router.post("/logout", status_code=status.HTTP_200_OK)
 async def logout(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Revoke user's current session."""
-    await auth_service.logout(db=db, user=current_user)
+    session_id = getattr(current_user, "current_session_id", None)
+    request_id = getattr(request.state, "request_id", None)
+    await auth_service.logout(db=db, user=current_user, session_id=session_id, request_id=request_id)
     return {"success": True, "message": "Logged out successfully"}

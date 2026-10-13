@@ -125,17 +125,45 @@ class AuthService:
         )
 
     @staticmethod
-    async def logout(db: AsyncSession, user: User, session_id: Optional[str] = None) -> None:
+    async def logout(
+        db: AsyncSession,
+        user: User,
+        session_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
         if session_id:
             try:
                 s_uuid = uuid.UUID(session_id)
                 stmt = select(AuthSession).where(AuthSession.id == s_uuid, AuthSession.user_id == user.id)
                 result = await db.execute(stmt)
                 session = result.scalar_one_or_none()
-                if session:
-                    session.revoked_at = datetime.now(timezone.utc)
+                if session and session.revoked_at is None:
+                    session.revoked_at = now
+                    await record_audit_log(
+                        db=db,
+                        action="USER_LOGOUT",
+                        resource_type="auth_session",
+                        resource_id=str(session.id),
+                        actor_id=user.id,
+                        request_id=request_id,
+                    )
             except ValueError:
                 pass
+        else:
+            stmt = select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
+            result = await db.execute(stmt)
+            sessions = result.scalars().all()
+            for s in sessions:
+                s.revoked_at = now
+            await record_audit_log(
+                db=db,
+                action="USER_LOGOUT_ALL",
+                resource_type="user",
+                resource_id=str(user.id),
+                actor_id=user.id,
+                request_id=request_id,
+            )
         await db.commit()
 
 
