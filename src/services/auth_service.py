@@ -8,6 +8,7 @@ from src.config import settings
 from src.core.audit import record_audit_log
 from src.core.exceptions import UnauthorizedError, NotFoundError, ConflictError, ValidationError
 from src.core.security import verify_password, hash_password, hash_token, create_access_token
+from src.core.demo import DEMO_CREDENTIALS
 from src.models.user import User, UserStatus
 from src.models.auth_session import AuthSession, PasswordResetToken
 from src.schemas.auth import TokenResponse, UserProfileResponse
@@ -23,11 +24,33 @@ class AuthService:
         device_reference: Optional[str] = None,
         request_id: Optional[str] = None,
     ) -> TokenResponse:
-        stmt = select(User).where(User.email == email.lower().strip())
-        result = await db.execute(stmt)
-        user = result.scalar_one_or_none()
+        clean_email = email.lower().strip()
+        user = None
+
+        try:
+            stmt = select(User).where(User.email == clean_email)
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
+        except Exception:
+            # Database unreachable / offline in development
+            user = None
 
         if not user or not verify_password(password, user.password_hash):
+            # Development mode demo credentials fallback
+            if settings.APP_ENV == "development" and clean_email in DEMO_CREDENTIALS:
+                demo = DEMO_CREDENTIALS[clean_email]
+                if password == demo["password"]:
+                    demo_session_id = uuid.uuid4()
+                    access_token = create_access_token(
+                        subject=str(demo["id"]),
+                        role=demo["role"].value,
+                        session_id=str(demo_session_id),
+                    )
+                    return TokenResponse(
+                        access_token=access_token,
+                        refresh_token=secrets.token_urlsafe(48),
+                        expires_in_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+                    )
             raise UnauthorizedError("Invalid email or password")
 
         if user.status != UserStatus.ACTIVE:

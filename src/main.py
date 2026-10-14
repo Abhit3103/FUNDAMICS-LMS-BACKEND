@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from src.config import settings
 from src.core.exceptions import AppException, app_exception_handler
@@ -26,6 +27,23 @@ app = FastAPI(
 
 # Custom Exception Handlers
 app.add_exception_handler(AppException, app_exception_handler)
+
+
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", None)
+    error_message = str(exc) if settings.DEBUG else "An unexpected server error occurred"
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": error_message,
+            },
+            "request_id": request_id,
+        },
+    )
 
 # Custom Request Context Middleware
 app.add_middleware(RequestContextMiddleware)

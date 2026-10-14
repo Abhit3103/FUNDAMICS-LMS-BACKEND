@@ -64,3 +64,8 @@ htmlcov/
 # Logs
 logs/
 *.log
+
+# Node / Frontend artifacts
+node_modules/
+package.json
+package-lock.json

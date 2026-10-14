@@ -1,6 +1,7 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.core.dependencies import get_current_user
+from src.core.dependencies import get_current_user, get_optional_current_user
 from src.database import get_db
 from src.models.user import User
 from src.schemas.auth import (
@@ -9,12 +10,18 @@ from src.schemas.auth import (
     TokenResponse,
     UserProfileResponse,
 )
+from src.core.rate_limit import rate_limit_login, login_rate_limiter
 from src.services.auth_service import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Profile"])
 
 
-@router.post("/login", response_model=TokenResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_login)],
+)
 async def login(
     req: LoginRequest,
     request: Request,
@@ -22,6 +29,8 @@ async def login(
 ):
     """Authenticate user with email and password, returning short-lived access and rotating refresh tokens."""
     request_id = getattr(request.state, "request_id", None)
+    # Stop multiple attempts targeted at the same user/email
+    login_rate_limiter.check(f"email:{req.email.lower().strip()}")
     return await auth_service.authenticate_user(
         db=db,
         email=req.email,
@@ -65,9 +74,10 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
 @router.post("/logout", status_code=status.HTTP_200_OK)
 async def logout(
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Revoke user's current session."""
-    await auth_service.logout(db=db, user=current_user)
+    """Revoke user's current session if authenticated; succeed idempotently."""
+    if current_user:
+        await auth_service.logout(db=db, user=current_user)
     return {"success": True, "message": "Logged out successfully"}

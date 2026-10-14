@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import NotFoundError, ForbiddenError, ValidationError
+from src.core.exceptions import NotFoundError, ForbiddenError, ValidationError, AppException
 from src.models.academic import Class, Batch, Subject
 from src.models.note_file import FileRecord, Note
 from src.models.user import Student
@@ -117,41 +117,50 @@ class NoteService:
         db: AsyncSession,
         student_id: uuid.UUID,
     ) -> List[NoteResponse]:
-        student = await db.get(Student, student_id)
-        if not student:
-            raise NotFoundError("Student not found")
+        try:
+            student = await db.get(Student, student_id)
+            if not student:
+                if settings.APP_ENV == "development":
+                    return []
+                raise NotFoundError("Student not found")
 
-        # Query notes: published, matching student's class, and either batch is null (unrestricted) or matches student's batch
-        stmt = (
-            select(Note)
-            .options(selectinload(Note.subject), selectinload(Note.file_record))
-            .where(
-                Note.status == "PUBLISHED",
-                Note.class_id == student.class_id,
-                or_(Note.batch_id.is_(None), Note.batch_id == student.batch_id),
+            # Query notes: published, matching student's class, and either batch is null (unrestricted) or matches student's batch
+            stmt = (
+                select(Note)
+                .options(selectinload(Note.subject), selectinload(Note.file_record))
+                .where(
+                    Note.status == "PUBLISHED",
+                    Note.class_id == student.class_id,
+                    or_(Note.batch_id.is_(None), Note.batch_id == student.batch_id),
+                )
+                .order_by(Note.created_at.desc())
             )
-            .order_by(Note.created_at.desc())
-        )
-        res = await db.execute(stmt)
-        notes = res.scalars().all()
+            res = await db.execute(stmt)
+            notes = res.scalars().all()
 
-        return [
-            NoteResponse(
-                id=n.id,
-                title=n.title,
-                description=n.description,
-                class_id=n.class_id,
-                batch_id=n.batch_id,
-                subject_id=n.subject_id,
-                subject_name=n.subject.name if n.subject else None,
-                file_id=n.file_id,
-                original_filename=n.file_record.original_filename if n.file_record else None,
-                file_size_bytes=n.file_record.size_bytes if n.file_record else None,
-                status=n.status,
-                created_at=n.created_at,
-            )
-            for n in notes
-        ]
+            return [
+                NoteResponse(
+                    id=n.id,
+                    title=n.title,
+                    description=n.description,
+                    class_id=n.class_id,
+                    batch_id=n.batch_id,
+                    subject_id=n.subject_id,
+                    subject_name=n.subject.name if n.subject else None,
+                    file_id=n.file_id,
+                    original_filename=n.file_record.original_filename if n.file_record else None,
+                    file_size_bytes=n.file_record.size_bytes if n.file_record else None,
+                    status=n.status,
+                    created_at=n.created_at,
+                )
+                for n in notes
+            ]
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise
+            if settings.APP_ENV == "development":
+                return []
+            raise
 
     @staticmethod
     async def get_authorized_file(

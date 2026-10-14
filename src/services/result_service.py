@@ -4,8 +4,9 @@ from typing import List, Optional
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import NotFoundError, ValidationError, ConflictError
+from src.core.exceptions import NotFoundError, ValidationError, ConflictError, AppException
 from src.models.academic import Class, Batch, Subject
 from src.models.exam_result import Exam, Result
 from src.models.user import Student
@@ -154,67 +155,74 @@ class ResultService:
         db: AsyncSession,
         student_id: uuid.UUID,
     ) -> List[StudentExamSummaryResponse]:
-        # Enforce published only
-        stmt = (
-            select(Result)
-            .options(selectinload(Result.exam), selectinload(Result.subject))
-            .where(
-                Result.student_id == student_id,
-                Result.published_at.is_not(None),
-            )
-            .order_by(Result.created_at.desc())
-        )
-        res = await db.execute(stmt)
-        results = res.scalars().all()
-
-        # Group by exam
-        exams_dict = {}
-        for r in results:
-            eid = r.exam_id
-            if eid not in exams_dict:
-                exams_dict[eid] = {
-                    "exam_id": eid,
-                    "exam_name": r.exam.name,
-                    "exam_date": r.exam.date,
-                    "results": [],
-                }
-
-            pct = round((float(r.marks_obtained) / float(r.max_marks)) * 100, 2) if r.max_marks > 0 else 0.0
-            exams_dict[eid]["results"].append(
-                ResultResponse(
-                    id=r.id,
-                    exam_id=r.exam_id,
-                    exam_name=r.exam.name,
-                    student_id=r.student_id,
-                    subject_id=r.subject_id,
-                    subject_name=r.subject.name,
-                    marks_obtained=float(r.marks_obtained),
-                    max_marks=float(r.max_marks),
-                    percentage=pct,
-                    grade=r.grade,
-                    published_at=r.published_at,
+        try:
+            # Enforce published only
+            stmt = (
+                select(Result)
+                .options(selectinload(Result.exam), selectinload(Result.subject))
+                .where(
+                    Result.student_id == student_id,
+                    Result.published_at.is_not(None),
                 )
+                .order_by(Result.created_at.desc())
             )
+            res = await db.execute(stmt)
+            results = res.scalars().all()
 
-        summaries = []
-        for eid, data in exams_dict.items():
-            tot_obtained = sum(item.marks_obtained for item in data["results"])
-            tot_max = sum(item.max_marks for item in data["results"])
-            overall_pct = round((tot_obtained / tot_max) * 100, 2) if tot_max > 0 else 0.0
+            # Group by exam
+            exams_dict = {}
+            for r in results:
+                eid = r.exam_id
+                if eid not in exams_dict:
+                    exams_dict[eid] = {
+                        "exam_id": eid,
+                        "exam_name": r.exam.name,
+                        "exam_date": r.exam.date,
+                        "results": [],
+                    }
 
-            summaries.append(
-                StudentExamSummaryResponse(
-                    exam_id=data["exam_id"],
-                    exam_name=data["exam_name"],
-                    exam_date=data["exam_date"],
-                    total_marks_obtained=tot_obtained,
-                    total_max_marks=tot_max,
-                    overall_percentage=overall_pct,
-                    results=data["results"],
+                pct = round((float(r.marks_obtained) / float(r.max_marks)) * 100, 2) if r.max_marks > 0 else 0.0
+                exams_dict[eid]["results"].append(
+                    ResultResponse(
+                        id=r.id,
+                        exam_id=r.exam_id,
+                        exam_name=r.exam.name,
+                        student_id=r.student_id,
+                        subject_id=r.subject_id,
+                        subject_name=r.subject.name,
+                        marks_obtained=float(r.marks_obtained),
+                        max_marks=float(r.max_marks),
+                        percentage=pct,
+                        grade=r.grade,
+                        published_at=r.published_at,
+                    )
                 )
-            )
 
-        return summaries
+            summaries = []
+            for eid, data in exams_dict.items():
+                tot_obtained = sum(item.marks_obtained for item in data["results"])
+                tot_max = sum(item.max_marks for item in data["results"])
+                overall_pct = round((tot_obtained / tot_max) * 100, 2) if tot_max > 0 else 0.0
+
+                summaries.append(
+                    StudentExamSummaryResponse(
+                        exam_id=data["exam_id"],
+                        exam_name=data["exam_name"],
+                        exam_date=data["exam_date"],
+                        total_marks_obtained=tot_obtained,
+                        total_max_marks=tot_max,
+                        overall_percentage=overall_pct,
+                        results=data["results"],
+                    )
+                )
+
+            return summaries
+        except Exception as e:
+            if isinstance(e, AppException):
+                raise
+            if settings.APP_ENV == "development":
+                return []
+            raise
 
 
 result_service = ResultService()

@@ -1,5 +1,5 @@
 from typing import List, Optional, Union
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,14 +41,52 @@ class Settings(BaseSettings):
     NOTIFICATIONS_ENABLED: bool = True
     ERP_API_KEY: str = "test_erp_key"
 
-    CORS_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:5173,http://localhost:8081"
+    CORS_ORIGINS: Union[str, List[str]] = (
+        "http://localhost:8081,http://127.0.0.1:8081,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
+    )
+    PRODUCTION_CORS_ORIGINS: Optional[Union[str, List[str]]] = None
+    ADDITIONAL_CORS_ORIGINS: Optional[Union[str, List[str]]] = None
 
     @field_validator("CORS_ORIGINS", mode="after")
     @classmethod
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
+    def assemble_cors_origins(cls, v: Union[str, List[str]], info: ValidationInfo) -> List[str]:
+        origins: List[str] = []
         if isinstance(v, str):
-            return [i.strip() for i in v.split(",") if i.strip()]
-        return v
+            origins = [i.strip() for i in v.split(",") if i.strip()]
+        elif isinstance(v, list):
+            origins = [str(i).strip() for i in v if str(i).strip()]
+
+        # Ensure both localhost and 127.0.0.1 loopbacks for dev ports exist
+        dev_ports = ["8081", "3000", "5173"]
+        for port in dev_ports:
+            local_host = f"http://localhost:{port}"
+            local_ip = f"http://127.0.0.1:{port}"
+            if local_host in origins and local_ip not in origins:
+                origins.append(local_ip)
+            if local_ip in origins and local_host not in origins:
+                origins.append(local_host)
+
+        # Merge production and additional origins if provided via environment
+        extra_sources = []
+        if info.data:
+            for key in ("PRODUCTION_CORS_ORIGINS", "ADDITIONAL_CORS_ORIGINS"):
+                val = info.data.get(key)
+                if val:
+                    extra_sources.append(val)
+
+        for src in extra_sources:
+            if isinstance(src, str):
+                items = [i.strip() for i in src.split(",") if i.strip()]
+            elif isinstance(src, list):
+                items = [str(i).strip() for i in src if str(i).strip()]
+            else:
+                items = []
+
+            for item in items:
+                if item not in origins:
+                    origins.append(item)
+
+        return origins
 
 
 settings = Settings()
