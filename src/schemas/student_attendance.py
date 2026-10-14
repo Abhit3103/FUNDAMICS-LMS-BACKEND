@@ -134,3 +134,23 @@ class StudentAttendanceSubmitResponse(BaseModel):
     updated_count: int
     message: str
     records: List[StudentAttendanceItemRecord]
+
+
+class StudentDailyAttendanceRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    date: str
+    status: str
+    session_count: Optional[int] = 1
+    remarks: Optional[str] = None
+
+
+class StudentMonthlyAttendanceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month: str
+    total_scheduled_days: int
+    present_days: int
+    absent_days: int
+    attendance_percentage: float
+    daily_records: List[StudentDailyAttendanceRecord]

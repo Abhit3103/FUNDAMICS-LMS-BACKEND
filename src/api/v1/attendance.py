@@ -15,6 +15,7 @@ from src.schemas.student_attendance import (
     StudentAttendanceRosterResponse,
     StudentAttendanceSubmitRequest,
     StudentAttendanceSubmitResponse,
+    StudentMonthlyAttendanceResponse,
 )
 from src.services.student_attendance_service import student_attendance_service
 
@@ -201,4 +202,22 @@ async def get_my_attendance_summary(
     return await student_attendance_service.get_student_summary(
         db=db,
         student_id=current_user.student.id,
+    )
+
+
+@student_attendance_router.get(
+    "/me/attendance/logs",
+    response_model=StudentMonthlyAttendanceResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_my_attendance_logs(
+    month: str = Query(..., description="Target month in YYYY-MM format"),
+    current_user: User = Depends(require_student),
+    db: AsyncSession = Depends(get_db),
+):
+    """Student-only: Query authenticated student's day-wise attendance log records for a calendar month."""
+    return await student_attendance_service.get_student_monthly_logs(
+        db=db,
+        student_id=current_user.student.id,
+        month=month,
     )
