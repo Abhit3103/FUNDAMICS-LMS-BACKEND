@@ -2906,6 +2906,353 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "Admin \u2014 Exams & Results"
+        ],
+        "summary": "Unlink Result Document",
+        "description": "Admin-only: Unlink/remove attached document from a student result.",
+        "operationId": "unlink_result_document_api_v1_admin_results__result_id__document_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "result_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Result Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/results/{result_id}/document-mapping": {
+      "post": {
+        "tags": [
+          "Admin \u2014 Exams & Results"
+        ],
+        "summary": "Map Result Document",
+        "description": "Admin-only: Map an already uploaded file (file_id) to a student result by result ID.",
+        "operationId": "map_result_document_api_v1_admin_results__result_id__document_mapping_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "result_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Result Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapResultDocumentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/results/document-mapping": {
+      "post": {
+        "tags": [
+          "Admin \u2014 Exams & Results"
+        ],
+        "summary": "Direct Map Result Document",
+        "description": "Admin-only: Directly map an uploaded document to a student result by exam and student ID.",
+        "operationId": "direct_map_result_document_api_v1_admin_results_document_mapping_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectStudentResultDocumentMappingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/exams/{exam_id}/students/{student_id}/document-mapping": {
+      "post": {
+        "tags": [
+          "Admin \u2014 Exams & Results"
+        ],
+        "summary": "Map Student Exam Document",
+        "description": "Admin-only: Map an uploaded document (file_id) to a student's exam result.",
+        "operationId": "map_student_exam_document_api_v1_admin_exams__exam_id__students__student_id__document_mapping_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "exam_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Exam Id"
+            }
+          },
+          {
+            "name": "student_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Student Id"
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional subject ID",
+              "title": "Subject Id"
+            },
+            "description": "Optional subject ID"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MapResultDocumentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/exams/{exam_id}/students/{student_id}/document": {
+      "post": {
+        "tags": [
+          "Admin \u2014 Exams & Results"
+        ],
+        "summary": "Upload Student Exam Document",
+        "description": "Admin-only: Directly upload and link a scorecard document for a student in an exam.",
+        "operationId": "upload_student_exam_document_api_v1_admin_exams__exam_id__students__student_id__document_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "exam_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Exam Id"
+            }
+          },
+          {
+            "name": "student_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Student Id"
+            }
+          },
+          {
+            "name": "subject_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional subject ID",
+              "title": "Subject Id"
+            },
+            "description": "Optional subject ID"
+          },
+          {
+            "name": "remarks",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional remarks",
+              "title": "Remarks"
+            },
+            "description": "Optional remarks"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_student_exam_document_api_v1_admin_exams__exam_id__students__student_id__document_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/admin/files/upload": {
@@ -4363,6 +4710,20 @@
         ],
         "title": "Body_upload_result_document_api_v1_admin_results__result_id__document_post"
       },
+      "Body_upload_student_exam_document_api_v1_admin_exams__exam_id__students__student_id__document_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_student_exam_document_api_v1_admin_exams__exam_id__students__student_id__document_post"
+      },
       "BulkEnterMarksRequest": {
         "properties": {
           "exam_id": {
@@ -4888,6 +5249,57 @@
         ],
         "title": "CreateTeacherRequest"
       },
+      "DirectStudentResultDocumentMappingRequest": {
+        "properties": {
+          "exam_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Exam Id"
+          },
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Id"
+          },
+          "remarks": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remarks"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "exam_id",
+          "student_id",
+          "file_id"
+        ],
+        "title": "DirectStudentResultDocumentMappingRequest"
+      },
       "EnterMarksItem": {
         "properties": {
           "student_id": {
@@ -4896,8 +5308,15 @@
             "title": "Student Id"
           },
           "subject_id": {
-            "type": "string",
-            "format": "uuid",
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Subject Id"
           },
           "marks_obtained": {
@@ -4921,13 +5340,48 @@
               }
             ],
             "title": "Grade"
+          },
+          "remarks": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remarks"
+          },
+          "document_file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document File Id"
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "student_id",
-          "subject_id",
           "marks_obtained",
           "max_marks"
         ],
@@ -5348,6 +5802,37 @@
           "password"
         ],
         "title": "LoginRequest"
+      },
+      "MapResultDocumentRequest": {
+        "properties": {
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
+          },
+          "document_file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document File Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MapResultDocumentRequest"
       },
       "MessageResponse": {
         "properties": {
@@ -6117,6 +6602,17 @@
             ],
             "title": "Grade"
           },
+          "remarks": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remarks"
+          },
           "published_at": {
             "anyOf": [
               {
@@ -6140,6 +6636,17 @@
               }
             ],
             "title": "Document File Id"
+          },
+          "document_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Filename"
           },
           "has_document": {
             "type": "boolean",

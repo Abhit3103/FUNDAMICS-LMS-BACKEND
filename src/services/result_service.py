@@ -81,11 +81,35 @@ class ResultService:
             if item.marks_obtained > item.max_marks:
                 raise ValidationError(f"Marks obtained ({item.marks_obtained}) exceeds max marks ({item.max_marks})")
 
+            # Determine subject_id
+            subj_id = item.subject_id
+            if not subj_id:
+                stmt_subj = select(Subject).where(Subject.class_id == exam.class_id).limit(1)
+                res_subj = await db.execute(stmt_subj)
+                subj = res_subj.scalar_one_or_none()
+                if not subj:
+                    subj = Subject(
+                        class_id=exam.class_id,
+                        name="General",
+                        code=f"GEN-{str(exam.class_id)[:4].upper()}",
+                        status="ACTIVE",
+                    )
+                    db.add(subj)
+                    await db.flush()
+                subj_id = subj.id
+
+            # Determine document_file_id
+            doc_file_id = item.document_file_id or item.file_id
+            if doc_file_id:
+                file_rec = await db.get(FileRecord, doc_file_id)
+                if not file_rec:
+                    raise NotFoundError(f"Uploaded file record {doc_file_id} not found")
+
             # Check existing result
             stmt = select(Result).where(
                 Result.exam_id == exam_id,
                 Result.student_id == item.student_id,
-                Result.subject_id == item.subject_id,
+                Result.subject_id == subj_id,
             )
             res = await db.execute(stmt)
             existing = res.scalar_one_or_none()
@@ -94,14 +118,20 @@ class ResultService:
                 existing.marks_obtained = item.marks_obtained
                 existing.max_marks = item.max_marks
                 existing.grade = item.grade
+                if item.remarks is not None:
+                    existing.remarks = item.remarks
+                if doc_file_id is not None:
+                    existing.document_file_id = doc_file_id
             else:
                 new_result = Result(
                     exam_id=exam_id,
                     student_id=item.student_id,
-                    subject_id=item.subject_id,
+                    subject_id=subj_id,
                     marks_obtained=item.marks_obtained,
                     max_marks=item.max_marks,
                     grade=item.grade,
+                    remarks=item.remarks,
+                    document_file_id=doc_file_id,
                 )
                 db.add(new_result)
             inserted_count += 1
@@ -162,7 +192,11 @@ class ResultService:
         # Enforce published only
         stmt = (
             select(Result)
-            .options(selectinload(Result.exam), selectinload(Result.subject))
+            .options(
+                selectinload(Result.exam),
+                selectinload(Result.subject),
+                selectinload(Result.document_file),
+            )
             .where(
                 Result.student_id == student_id,
                 Result.published_at.is_not(None),
@@ -197,7 +231,11 @@ class ResultService:
                     max_marks=float(r.max_marks),
                     percentage=pct,
                     grade=r.grade,
+                    remarks=r.remarks,
                     published_at=r.published_at,
+                    document_file_id=r.document_file_id,
+                    document_filename=r.document_file.original_filename if r.document_file else None,
+                    has_document=r.document_file_id is not None,
                 )
             )
 
@@ -253,6 +291,7 @@ class ResultService:
                 selectinload(Exam.class_rel),
                 selectinload(Exam.results).selectinload(Result.student).selectinload(Student.user),
                 selectinload(Exam.results).selectinload(Result.subject),
+                selectinload(Exam.results).selectinload(Result.document_file),
             )
             .where(Exam.id == exam_id)
         )
@@ -278,8 +317,10 @@ class ResultService:
                     max_marks=float(r.max_marks),
                     percentage=pct,
                     grade=r.grade,
+                    remarks=r.remarks,
                     published_at=r.published_at,
                     document_file_id=r.document_file_id,
+                    document_filename=r.document_file.original_filename if r.document_file else None,
                     has_document=r.document_file_id is not None,
                 )
             )
@@ -346,10 +387,286 @@ class ResultService:
             max_marks=float(result.max_marks),
             percentage=pct,
             grade=result.grade,
+            remarks=result.remarks,
             published_at=result.published_at,
             document_file_id=result.document_file_id,
+            document_filename=file_rec.original_filename,
             has_document=True,
         )
+
+    @staticmethod
+    async def map_result_document(
+        db: AsyncSession,
+        result_id: uuid.UUID,
+        file_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        request_id: Optional[str] = None,
+    ) -> ResultResponse:
+        stmt = (
+            select(Result)
+            .options(
+                selectinload(Result.exam),
+                selectinload(Result.subject),
+                selectinload(Result.student).selectinload(Student.user),
+            )
+            .where(Result.id == result_id)
+        )
+        res = await db.execute(stmt)
+        result = res.scalar_one_or_none()
+        if not result:
+            raise NotFoundError("Result record not found")
+
+        file_rec = await db.get(FileRecord, file_id)
+        if not file_rec:
+            raise NotFoundError(f"Uploaded file record {file_id} not found")
+
+        result.document_file_id = file_rec.id
+
+        await record_audit_log(
+            db=db,
+            action="RESULT_DOCUMENT_MAPPED",
+            resource_type="result",
+            resource_id=str(result.id),
+            actor_id=actor_id,
+            after_json={"file_id": str(file_rec.id), "filename": file_rec.original_filename},
+            request_id=request_id,
+        )
+        await db.commit()
+
+        pct = round((float(result.marks_obtained) / float(result.max_marks)) * 100, 2) if result.max_marks > 0 else 0.0
+        return ResultResponse(
+            id=result.id,
+            exam_id=result.exam_id,
+            exam_name=result.exam.name if result.exam else None,
+            student_id=result.student_id,
+            student_name=result.student.user.name if result.student and result.student.user else None,
+            student_code=result.student.student_code if result.student else None,
+            subject_id=result.subject_id,
+            subject_name=result.subject.name if result.subject else None,
+            marks_obtained=float(result.marks_obtained),
+            max_marks=float(result.max_marks),
+            percentage=pct,
+            grade=result.grade,
+            remarks=result.remarks,
+            published_at=result.published_at,
+            document_file_id=result.document_file_id,
+            document_filename=file_rec.original_filename,
+            has_document=True,
+        )
+
+    @staticmethod
+    async def direct_map_student_result_document(
+        db: AsyncSession,
+        exam_id: uuid.UUID,
+        student_id: uuid.UUID,
+        file_id: uuid.UUID,
+        subject_id: Optional[uuid.UUID] = None,
+        remarks: Optional[str] = None,
+        actor_id: uuid.UUID = None,
+        request_id: Optional[str] = None,
+    ) -> ResultResponse:
+        exam = await db.get(Exam, exam_id)
+        if not exam:
+            raise NotFoundError("Exam container not found")
+
+        student = await db.get(Student, student_id)
+        if not student:
+            raise NotFoundError("Student record not found")
+
+        file_rec = await db.get(FileRecord, file_id)
+        if not file_rec:
+            raise NotFoundError(f"Uploaded file record {file_id} not found")
+
+        # Resolve subject
+        subj_id = subject_id
+        if not subj_id:
+            stmt_subj = select(Subject).where(Subject.class_id == exam.class_id).limit(1)
+            res_subj = await db.execute(stmt_subj)
+            subj = res_subj.scalar_one_or_none()
+            if not subj:
+                subj = Subject(
+                    class_id=exam.class_id,
+                    name="General",
+                    code=f"GEN-{str(exam.class_id)[:4].upper()}",
+                    status="ACTIVE",
+                )
+                db.add(subj)
+                await db.flush()
+            subj_id = subj.id
+
+        # Find or create Result record
+        stmt = (
+            select(Result)
+            .options(
+                selectinload(Result.exam),
+                selectinload(Result.subject),
+                selectinload(Result.student).selectinload(Student.user),
+            )
+            .where(
+                Result.exam_id == exam_id,
+                Result.student_id == student_id,
+                Result.subject_id == subj_id,
+            )
+        )
+        res = await db.execute(stmt)
+        result = res.scalar_one_or_none()
+
+        if result:
+            result.document_file_id = file_rec.id
+            if remarks is not None:
+                result.remarks = remarks
+        else:
+            result = Result(
+                exam_id=exam_id,
+                student_id=student_id,
+                subject_id=subj_id,
+                marks_obtained=0.0,
+                max_marks=100.0,
+                grade=None,
+                remarks=remarks,
+                document_file_id=file_rec.id,
+            )
+            db.add(result)
+            await db.flush()
+
+        await record_audit_log(
+            db=db,
+            action="DIRECT_RESULT_DOCUMENT_MAPPED",
+            resource_type="result",
+            resource_id=str(result.id),
+            actor_id=actor_id,
+            after_json={
+                "exam_id": str(exam_id),
+                "student_id": str(student_id),
+                "file_id": str(file_rec.id),
+                "filename": file_rec.original_filename,
+            },
+            request_id=request_id,
+        )
+        await db.commit()
+
+        # Re-fetch with relationships to ensure everything is populated
+        stmt_refetch = (
+            select(Result)
+            .options(
+                selectinload(Result.exam),
+                selectinload(Result.subject),
+                selectinload(Result.student).selectinload(Student.user),
+                selectinload(Result.document_file),
+            )
+            .where(Result.id == result.id)
+        )
+        res_refetch = await db.execute(stmt_refetch)
+        result = res_refetch.scalar_one()
+
+        pct = round((float(result.marks_obtained) / float(result.max_marks)) * 100, 2) if result.max_marks > 0 else 0.0
+        return ResultResponse(
+            id=result.id,
+            exam_id=result.exam_id,
+            exam_name=result.exam.name if result.exam else None,
+            student_id=result.student_id,
+            student_name=result.student.user.name if result.student and result.student.user else None,
+            student_code=result.student.student_code if result.student else None,
+            subject_id=result.subject_id,
+            subject_name=result.subject.name if result.subject else None,
+            marks_obtained=float(result.marks_obtained),
+            max_marks=float(result.max_marks),
+            percentage=pct,
+            grade=result.grade,
+            remarks=result.remarks,
+            published_at=result.published_at,
+            document_file_id=result.document_file_id,
+            document_filename=file_rec.original_filename,
+            has_document=True,
+        )
+
+    @staticmethod
+    async def direct_upload_student_result_document(
+        db: AsyncSession,
+        exam_id: uuid.UUID,
+        student_id: uuid.UUID,
+        file: UploadFile,
+        subject_id: Optional[uuid.UUID] = None,
+        remarks: Optional[str] = None,
+        actor_id: uuid.UUID = None,
+        request_id: Optional[str] = None,
+    ) -> ResultResponse:
+        exam = await db.get(Exam, exam_id)
+        if not exam:
+            raise NotFoundError("Exam container not found")
+
+        student = await db.get(Student, student_id)
+        if not student:
+            raise NotFoundError("Student record not found")
+
+        file_rec = await note_service.upload_file(db=db, file=file, actor_id=actor_id, request_id=request_id)
+        return await ResultService.direct_map_student_result_document(
+            db=db,
+            exam_id=exam_id,
+            student_id=student_id,
+            file_id=file_rec.id,
+            subject_id=subject_id,
+            remarks=remarks,
+            actor_id=actor_id,
+            request_id=request_id,
+        )
+
+    @staticmethod
+    async def unlink_result_document(
+        db: AsyncSession,
+        result_id: uuid.UUID,
+        actor_id: uuid.UUID,
+        request_id: Optional[str] = None,
+    ) -> ResultResponse:
+        stmt = (
+            select(Result)
+            .options(
+                selectinload(Result.exam),
+                selectinload(Result.subject),
+                selectinload(Result.student).selectinload(Student.user),
+            )
+            .where(Result.id == result_id)
+        )
+        res = await db.execute(stmt)
+        result = res.scalar_one_or_none()
+        if not result:
+            raise NotFoundError("Result record not found")
+
+        old_file_id = result.document_file_id
+        result.document_file_id = None
+
+        await record_audit_log(
+            db=db,
+            action="RESULT_DOCUMENT_UNLINKED",
+            resource_type="result",
+            resource_id=str(result.id),
+            actor_id=actor_id,
+            after_json={"unlinked_file_id": str(old_file_id) if old_file_id else None},
+            request_id=request_id,
+        )
+        await db.commit()
+
+        pct = round((float(result.marks_obtained) / float(result.max_marks)) * 100, 2) if result.max_marks > 0 else 0.0
+        return ResultResponse(
+            id=result.id,
+            exam_id=result.exam_id,
+            exam_name=result.exam.name if result.exam else None,
+            student_id=result.student_id,
+            student_name=result.student.user.name if result.student and result.student.user else None,
+            student_code=result.student.student_code if result.student else None,
+            subject_id=result.subject_id,
+            subject_name=result.subject.name if result.subject else None,
+            marks_obtained=float(result.marks_obtained),
+            max_marks=float(result.max_marks),
+            percentage=pct,
+            grade=result.grade,
+            remarks=result.remarks,
+            published_at=result.published_at,
+            document_file_id=None,
+            document_filename=None,
+            has_document=False,
+        )
+
 
     @staticmethod
     async def get_authorized_result_document(

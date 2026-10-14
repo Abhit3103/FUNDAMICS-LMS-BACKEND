@@ -65,6 +65,7 @@ class Result(TimeStampedUUIDModel):
         nullable=True,
         index=True,
     )
+    remarks: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
 
     # Relationships
     exam: Mapped["Exam"] = relationship("Exam", back_populates="results")
