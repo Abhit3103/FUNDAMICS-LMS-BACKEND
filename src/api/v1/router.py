@@ -8,12 +8,14 @@ from src.api.v1.biometric import integrations_router, teacher_attendance_router,
 from src.api.v1.results import admin_results_router, student_results_router
 from src.api.v1.notes import admin_notes_router, student_notes_router
 from src.api.v1.system import admin_system_router
+from src.api.v1.notices import admin_notices_router, user_notices_router
 
 v1_router = APIRouter()
 
 # Core system routes
 v1_router.include_router(health_router)
 v1_router.include_router(auth_router)
+v1_router.include_router(user_notices_router)
 
 # Admin core routes
 v1_router.include_router(admin_users_router)
@@ -22,6 +24,7 @@ v1_router.include_router(admin_attendance_router)
 v1_router.include_router(admin_teacher_attendance_router)
 v1_router.include_router(admin_results_router)
 v1_router.include_router(admin_notes_router)
+v1_router.include_router(admin_notices_router)
 v1_router.include_router(admin_system_router)
 
 # Student role-specific /me routes

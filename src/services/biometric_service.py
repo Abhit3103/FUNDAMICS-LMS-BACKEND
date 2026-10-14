@@ -12,6 +12,7 @@ from src.models.teacher_attendance import (
     BiometricEventType,
     TeacherAttendanceStatus,
 )
+from sqlalchemy.orm import selectinload
 from src.models.system import InstituteSettings
 from src.models.user import Teacher
 from src.schemas.teacher_attendance import (
@@ -19,6 +20,8 @@ from src.schemas.teacher_attendance import (
     IngestBiometricEventsResponse,
     TeacherAttendanceDaySummary,
     TeacherAttendanceOverallSummary,
+    TeacherAttendanceRecordResponse,
+    TeacherAttendanceReportResponse,
 )
 
 
@@ -214,6 +217,185 @@ class BiometricService:
             incomplete_days=incomplete,
             total_served_hours=round(total_mins / 60.0, 2),
         )
+
+    @staticmethod
+    async def list_teacher_attendance(
+        db: AsyncSession,
+        teacher_id: Optional[uuid.UUID] = None,
+        target_date: Optional[date] = None,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        status: Optional[TeacherAttendanceStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[TeacherAttendanceRecordResponse]:
+        query = (
+            select(TeacherAttendance)
+            .options(
+                selectinload(TeacherAttendance.teacher).selectinload(Teacher.user)
+            )
+            .order_by(TeacherAttendance.date.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        if teacher_id:
+            query = query.where(TeacherAttendance.teacher_id == teacher_id)
+        if target_date:
+            query = query.where(TeacherAttendance.date == target_date)
+        if start_date:
+            query = query.where(TeacherAttendance.date >= start_date)
+        if end_date:
+            query = query.where(TeacherAttendance.date <= end_date)
+        if status:
+            query = query.where(TeacherAttendance.status == status)
+
+        res = await db.execute(query)
+        records = res.scalars().all()
+
+        return [
+            TeacherAttendanceRecordResponse(
+                id=r.id,
+                teacher_id=r.teacher_id,
+                teacher_name=r.teacher.user.name if r.teacher and r.teacher.user else None,
+                teacher_code=r.teacher.teacher_code if r.teacher else None,
+                date=r.date,
+                check_in_at=r.check_in_at,
+                check_out_at=r.check_out_at,
+                served_minutes=r.served_minutes,
+                required_minutes=r.required_minutes,
+                status=r.status,
+            )
+            for r in records
+        ]
+
+    @staticmethod
+    async def get_teacher_attendance_report(
+        db: AsyncSession,
+        start_date: date,
+        end_date: date,
+    ) -> TeacherAttendanceReportResponse:
+        # Aggregated stats across date range
+        stmt = (
+            select(
+                TeacherAttendance.status,
+                func.count(TeacherAttendance.id),
+                func.sum(TeacherAttendance.served_minutes),
+            )
+            .where(
+                TeacherAttendance.date >= start_date,
+                TeacherAttendance.date <= end_date,
+            )
+            .group_by(TeacherAttendance.status)
+        )
+        res = await db.execute(stmt)
+        rows = res.all()
+
+        counts = {}
+        total_mins = 0
+        for st, cnt, mins in rows:
+            counts[st] = cnt
+            if mins:
+                total_mins += mins
+
+        present = counts.get(TeacherAttendanceStatus.PRESENT, 0)
+        absent = counts.get(TeacherAttendanceStatus.ABSENT, 0)
+        half_day = counts.get(TeacherAttendanceStatus.HALF_DAY, 0)
+        incomplete = counts.get(TeacherAttendanceStatus.INCOMPLETE, 0)
+        total_records = sum(counts.values())
+
+        # Individual teacher summaries within this date range
+        t_stmt = select(Teacher).options(selectinload(Teacher.user)).order_by(Teacher.teacher_code.asc())
+        teachers_res = await db.execute(t_stmt)
+        all_teachers = teachers_res.scalars().all()
+
+        teacher_summaries = []
+        for t in all_teachers:
+            ind_stmt = (
+                select(
+                    TeacherAttendance.status,
+                    func.count(TeacherAttendance.id),
+                    func.sum(TeacherAttendance.served_minutes),
+                )
+                .where(
+                    TeacherAttendance.teacher_id == t.id,
+                    TeacherAttendance.date >= start_date,
+                    TeacherAttendance.date <= end_date,
+                )
+                .group_by(TeacherAttendance.status)
+            )
+            ind_rows = (await db.execute(ind_stmt)).all()
+            ind_counts = {}
+            ind_mins = 0
+            for s, c, m in ind_rows:
+                ind_counts[s] = c
+                if m:
+                    ind_mins += m
+
+            teacher_summaries.append(
+                TeacherAttendanceOverallSummary(
+                    teacher_id=t.id,
+                    teacher_code=t.teacher_code,
+                    total_days=sum(ind_counts.values()),
+                    present_days=ind_counts.get(TeacherAttendanceStatus.PRESENT, 0),
+                    absent_days=ind_counts.get(TeacherAttendanceStatus.ABSENT, 0),
+                    half_days=ind_counts.get(TeacherAttendanceStatus.HALF_DAY, 0),
+                    incomplete_days=ind_counts.get(TeacherAttendanceStatus.INCOMPLETE, 0),
+                    total_served_hours=round(ind_mins / 60.0, 2),
+                )
+            )
+
+        return TeacherAttendanceReportResponse(
+            start_date=start_date,
+            end_date=end_date,
+            total_records=total_records,
+            present_count=present,
+            absent_count=absent,
+            half_day_count=half_day,
+            incomplete_count=incomplete,
+            total_hours_served=round(total_mins / 60.0, 2),
+            teacher_summaries=teacher_summaries,
+        )
+
+    @staticmethod
+    async def get_teacher_own_records(
+        db: AsyncSession,
+        teacher_id: uuid.UUID,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[TeacherAttendanceRecordResponse]:
+        query = (
+            select(TeacherAttendance)
+            .options(selectinload(TeacherAttendance.teacher).selectinload(Teacher.user))
+            .where(TeacherAttendance.teacher_id == teacher_id)
+            .order_by(TeacherAttendance.date.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        if start_date:
+            query = query.where(TeacherAttendance.date >= start_date)
+        if end_date:
+            query = query.where(TeacherAttendance.date <= end_date)
+
+        res = await db.execute(query)
+        records = res.scalars().all()
+
+        return [
+            TeacherAttendanceRecordResponse(
+                id=r.id,
+                teacher_id=r.teacher_id,
+                teacher_name=r.teacher.user.name if r.teacher and r.teacher.user else None,
+                teacher_code=r.teacher.teacher_code if r.teacher else None,
+                date=r.date,
+                check_in_at=r.check_in_at,
+                check_out_at=r.check_out_at,
+                served_minutes=r.served_minutes,
+                required_minutes=r.required_minutes,
+                status=r.status,
+            )
+            for r in records
+        ]
 
 
 biometric_service = BiometricService()

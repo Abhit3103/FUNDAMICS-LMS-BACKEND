@@ -67,6 +67,8 @@ class InstituteSettings(TimeStampedUUIDModel):
     __tablename__ = "institute_settings"
 
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
+    institute_status: Mapped[str] = mapped_column(String(30), default="OPEN", nullable=False)
+    erp_messaging_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     attendance_required_hours: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
     timezone: Mapped[str] = mapped_column(String(50), default="Asia/Kolkata", nullable=False)
     attendance_cutoff_time: Mapped[str] = mapped_column(String(10), default="23:59", nullable=False)
@@ -76,4 +78,38 @@ class InstituteSettings(TimeStampedUUIDModel):
         UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
+    )
+
+
+class Notice(TimeStampedUUIDModel):
+    __tablename__ = "notices"
+
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    target_audience: Mapped[str] = mapped_column(String(50), default="ALL", nullable=False)
+    class_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("classes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    batch_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("batches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    priority: Mapped[str] = mapped_column(String(30), default="NORMAL", nullable=False)
+    attachment_file_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
     )

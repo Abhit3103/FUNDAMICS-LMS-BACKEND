@@ -17,6 +17,8 @@ class UserRole(str, enum.Enum):
 class UserStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     PENDING_VERIFICATION = "PENDING_VERIFICATION"
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    REJECTED = "REJECTED"
     SUSPENDED = "SUSPENDED"
     INACTIVE = "INACTIVE"
 

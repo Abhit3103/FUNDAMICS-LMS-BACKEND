@@ -77,6 +77,8 @@ async def get_institute_settings(
         # Create singleton default
         settings_obj = InstituteSettings(
             status="ACTIVE",
+            institute_status="OPEN",
+            erp_messaging_enabled=True,
             attendance_required_hours=8,
             timezone="Asia/Kolkata",
             attendance_cutoff_time="23:59",
@@ -95,7 +97,7 @@ async def update_institute_settings(
     current_admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin-only: Update institute configuration settings."""
+    """Admin-only: Update institute configuration settings (institute status and ERP messaging)."""
     res = await db.execute(select(InstituteSettings))
     settings_obj = res.scalar_one_or_none()
     if not settings_obj:
@@ -103,6 +105,17 @@ async def update_institute_settings(
         db.add(settings_obj)
 
     update_data = req.model_dump(exclude_unset=True)
+    # Sync backward compatible aliases if one was set without the other
+    if "institute_status" in update_data and "status" not in update_data:
+        settings_obj.status = update_data["institute_status"]
+    elif "status" in update_data and "institute_status" not in update_data:
+        settings_obj.institute_status = update_data["status"]
+
+    if "erp_messaging_enabled" in update_data and "notifications_enabled" not in update_data:
+        settings_obj.notifications_enabled = update_data["erp_messaging_enabled"]
+    elif "notifications_enabled" in update_data and "erp_messaging_enabled" not in update_data:
+        settings_obj.erp_messaging_enabled = update_data["notifications_enabled"]
+
     for field, val in update_data.items():
         setattr(settings_obj, field, val)
 

@@ -12,6 +12,7 @@ class Class(TimeStampedUUIDModel):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
+    board: Mapped[str] = mapped_column(String(50), default="CBSE", nullable=False)
     academic_year: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="ACTIVE", nullable=False)
 

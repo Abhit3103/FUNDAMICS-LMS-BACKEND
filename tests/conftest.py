@@ -15,8 +15,11 @@ TEST_DATABASE_URL = os.getenv(
 assert "supabase" not in TEST_DATABASE_URL.lower(), "ABORT: TEST_DATABASE_URL points to Supabase!"
 assert "fundamics_test" in TEST_DATABASE_URL.lower(), "ABORT: TEST_DATABASE_URL must target fundamics_test!"
 
+from sqlalchemy.pool import NullPool
+
 engine = create_async_engine(
     TEST_DATABASE_URL,
+    poolclass=NullPool,
     future=True,
     echo=False,
 )
@@ -33,7 +36,11 @@ async def db_session():
     """Provides an isolated transaction for testing that always rolls back."""
     connection = await engine.connect()
     transaction = await connection.begin()
-    session = AsyncSession(bind=connection, expire_on_commit=False)
+    session = AsyncSession(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
 
     yield session
 

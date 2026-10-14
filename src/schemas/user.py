@@ -76,3 +76,33 @@ class TeacherResponse(BaseModel):
     teacher_code: str
     biometric_employee_id: Optional[str] = None
     status: str
+
+
+class ApproveRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    remarks: Optional[str] = Field(default=None, max_length=255)
+
+
+class RejectRegistrationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class PendingRegistrationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    user_id: uuid.UUID
+    student_id: Optional[uuid.UUID] = None
+    name: str
+    email: EmailStr
+    phone: Optional[str] = None
+    student_code: Optional[str] = None
+    class_id: Optional[uuid.UUID] = None
+    class_name: Optional[str] = None
+    batch_id: Optional[uuid.UUID] = None
+    batch_name: Optional[str] = None
+    status: UserStatus
+    email_verified: bool
+    created_at: date

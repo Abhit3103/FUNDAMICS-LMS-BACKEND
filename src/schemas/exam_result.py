@@ -55,6 +55,8 @@ class ResultResponse(BaseModel):
     exam_id: uuid.UUID
     exam_name: Optional[str] = None
     student_id: uuid.UUID
+    student_name: Optional[str] = None
+    student_code: Optional[str] = None
     subject_id: uuid.UUID
     subject_name: Optional[str] = None
     marks_obtained: float
@@ -62,6 +64,8 @@ class ResultResponse(BaseModel):
     percentage: float
     grade: Optional[str] = None
     published_at: Optional[datetime] = None
+    document_file_id: Optional[uuid.UUID] = None
+    has_document: bool = False
 
 
 class StudentExamSummaryResponse(BaseModel):
@@ -74,3 +78,17 @@ class StudentExamSummaryResponse(BaseModel):
     total_max_marks: float
     overall_percentage: float
     results: List[ResultResponse]
+
+
+class ExamDetailResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    class_id: uuid.UUID
+    class_name: Optional[str] = None
+    batch_id: Optional[uuid.UUID] = None
+    batch_name: Optional[str] = None
+    name: str
+    date: date
+    status: str
+    results: List[ResultResponse] = []

@@ -106,6 +106,8 @@ async def get_current_user(
         except ValueError:
             raise UnauthorizedError("Malformed session identifier in token")
 
+    user.current_session_id = session_id_str
+
     return user
 
 

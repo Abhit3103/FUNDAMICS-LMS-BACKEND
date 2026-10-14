@@ -59,8 +59,15 @@ class Result(TimeStampedUUIDModel):
     max_marks: Mapped[float] = mapped_column(Numeric(6, 2), nullable=False)
     grade: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     published_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    document_file_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationships
     exam: Mapped["Exam"] = relationship("Exam", back_populates="results")
     student: Mapped["Student"] = relationship("Student", back_populates="results")
     subject: Mapped["Subject"] = relationship("Subject", back_populates="results")
+    document_file: Mapped[Optional["FileRecord"]] = relationship("FileRecord")
