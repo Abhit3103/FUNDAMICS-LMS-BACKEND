@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     NOTIFICATIONS_ENABLED: bool = True
     ERP_API_KEY: str = "test_erp_key"
 
+    # Brevo (Sendinblue) Transactional Email
+    BREVO_API_KEY: Optional[str] = None
+    BREVO_SENDER_EMAIL: str = "noreply@fundamics.com"
+    BREVO_SENDER_NAME: str = "FUNDAMICS LMS"
+
+    # WhatsApp Business Cloud API
+    WHATSAPP_API_TOKEN: Optional[str] = None
+    WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
+    WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
+
     CORS_ORIGINS: Union[str, List[str]] = "http://localhost:3000,http://localhost:5173,http://localhost:8081"
 
     @field_validator("CORS_ORIGINS", mode="after")

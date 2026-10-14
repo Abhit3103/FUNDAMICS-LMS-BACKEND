@@ -9,6 +9,7 @@ class CreateClassRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=100)
     code: str = Field(min_length=1, max_length=50)
+    board: str = Field(default="CBSE", min_length=2, max_length=50)
     academic_year: str = Field(min_length=4, max_length=20)
 
 
@@ -16,6 +17,7 @@ class UpdateClassRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    board: Optional[str] = Field(default=None, min_length=2, max_length=50)
     academic_year: Optional[str] = Field(default=None, min_length=4, max_length=20)
     status: Optional[str] = Field(default=None, max_length=30)
 
@@ -26,6 +28,7 @@ class ClassResponse(BaseModel):
     id: uuid.UUID
     name: str
     code: str
+    board: str
     academic_year: str
     status: str
 

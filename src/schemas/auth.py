@@ -48,6 +48,44 @@ class ResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=8, max_length=128)
 
 
+class StudentSelfRegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=150)
+    email: EmailStr
+    phone: Optional[str] = Field(default=None, max_length=20)
+    password: str = Field(min_length=8, max_length=128)
+    class_id: uuid.UUID
+    batch_id: uuid.UUID
+
+
+class VerifyEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1)
+    email: Optional[EmailStr] = None
+
+
+class ResendVerificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+
+
+class UpdateProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    phone: Optional[str] = Field(default=None, max_length=20)
+
+
+class MessageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    message: str
+
+
 class UserProfileResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
 

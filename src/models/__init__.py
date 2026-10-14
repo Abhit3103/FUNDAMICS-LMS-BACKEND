@@ -6,7 +6,7 @@ from src.models.student_attendance import StudentAttendance, AttendanceImport, A
 from src.models.teacher_attendance import BiometricDevice, BiometricEvent, TeacherAttendance, BiometricEventType, TeacherAttendanceStatus
 from src.models.exam_result import Exam, Result
 from src.models.note_file import FileRecord, Note
-from src.models.system import AcademicCalendarEvent, NotificationRecord, AuditLog, InstituteSettings, CalendarEventType
+from src.models.system import AcademicCalendarEvent, NotificationRecord, AuditLog, InstituteSettings, CalendarEventType, Notice
 from src.models.auth_session import AuthSession, VerificationToken, PasswordResetToken
 
 __all__ = [
@@ -39,6 +39,7 @@ __all__ = [
     "AuditLog",
     "InstituteSettings",
     "CalendarEventType",
+    "Notice",
     "AuthSession",
     "VerificationToken",
     "PasswordResetToken",

@@ -1,16 +1,19 @@
 import uuid
 from datetime import date
-from typing import List
-from fastapi import APIRouter, Depends, Header, Request, status
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Header, Request, status, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.permissions import require_admin, require_teacher
 from src.database import get_db
 from src.models.user import User
+from src.models.teacher_attendance import TeacherAttendanceStatus
 from src.schemas.teacher_attendance import (
     BiometricEventWebhookPayload,
     IngestBiometricEventsResponse,
     TeacherAttendanceDaySummary,
     TeacherAttendanceOverallSummary,
+    TeacherAttendanceRecordResponse,
+    TeacherAttendanceReportResponse,
 )
 from src.services.biometric_service import biometric_service
 
@@ -58,7 +61,31 @@ async def get_my_attendance_summary(
     )
 
 
-# Admin Calculate Daily Attendance Endpoint
+@teacher_attendance_router.get(
+    "/me/attendance/records",
+    response_model=List[TeacherAttendanceRecordResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def get_my_attendance_records(
+    start_date: Optional[date] = Query(None, description="Filter from date"),
+    end_date: Optional[date] = Query(None, description="Filter to date"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(require_teacher),
+    db: AsyncSession = Depends(get_db),
+):
+    """Teacher-only: Query authenticated teacher's historical attendance records."""
+    return await biometric_service.get_teacher_own_records(
+        db=db,
+        teacher_id=current_user.teacher.id,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# Admin Teacher Attendance Endpoints
 @admin_teacher_attendance_router.post(
     "/teacher-attendance/{teacher_id}/calculate",
     response_model=TeacherAttendanceDaySummary,
@@ -75,4 +102,52 @@ async def calculate_teacher_attendance(
         db=db,
         teacher_id=teacher_id,
         target_date=target_date,
+    )
+
+
+@admin_teacher_attendance_router.get(
+    "/teacher-attendance",
+    response_model=List[TeacherAttendanceRecordResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_teacher_attendance(
+    teacher_id: Optional[uuid.UUID] = Query(None, description="Filter by teacher ID"),
+    date: Optional[date] = Query(None, description="Filter by exact date"),
+    start_date: Optional[date] = Query(None, description="Filter start date"),
+    end_date: Optional[date] = Query(None, description="Filter end date"),
+    status_filter: Optional[TeacherAttendanceStatus] = Query(None, alias="status", description="Filter by attendance status"),
+    limit: int = Query(100, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Query teacher attendance records with comprehensive filters."""
+    return await biometric_service.list_teacher_attendance(
+        db=db,
+        teacher_id=teacher_id,
+        target_date=date,
+        start_date=start_date,
+        end_date=end_date,
+        status=status_filter,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@admin_teacher_attendance_router.get(
+    "/teacher-attendance/report",
+    response_model=TeacherAttendanceReportResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_teacher_attendance_report(
+    start_date: date = Query(..., description="Report start date (YYYY-MM-DD)"),
+    end_date: date = Query(..., description="Report end date (YYYY-MM-DD)"),
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Aggregate staff attendance summary report across date range."""
+    return await biometric_service.get_teacher_attendance_report(
+        db=db,
+        start_date=start_date,
+        end_date=end_date,
     )

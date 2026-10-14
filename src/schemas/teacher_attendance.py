@@ -46,3 +46,32 @@ class TeacherAttendanceOverallSummary(BaseModel):
     half_days: int
     incomplete_days: int
     total_served_hours: float
+
+
+class TeacherAttendanceRecordResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", from_attributes=True)
+
+    id: uuid.UUID
+    teacher_id: uuid.UUID
+    teacher_name: Optional[str] = None
+    teacher_code: Optional[str] = None
+    date: date
+    check_in_at: Optional[datetime] = None
+    check_out_at: Optional[datetime] = None
+    served_minutes: int
+    required_minutes: int
+    status: TeacherAttendanceStatus
+
+
+class TeacherAttendanceReportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date
+    end_date: date
+    total_records: int
+    present_count: int
+    absent_count: int
+    half_day_count: int
+    incomplete_count: int
+    total_hours_served: float
+    teacher_summaries: List[TeacherAttendanceOverallSummary]
