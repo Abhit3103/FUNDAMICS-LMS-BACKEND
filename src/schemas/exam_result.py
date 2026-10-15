@@ -28,10 +28,13 @@ class EnterMarksItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     student_id: uuid.UUID
-    subject_id: uuid.UUID
+    subject_id: Optional[uuid.UUID] = None
     marks_obtained: float = Field(ge=0.0)
     max_marks: float = Field(gt=0.0)
     grade: Optional[str] = Field(default=None, max_length=10)
+    remarks: Optional[str] = Field(default=None, max_length=500)
+    document_file_id: Optional[uuid.UUID] = None
+    file_id: Optional[uuid.UUID] = None
 
 
 class BulkEnterMarksRequest(BaseModel):
@@ -46,6 +49,23 @@ class PublishExamResultsRequest(BaseModel):
 
     exam_id: uuid.UUID
     publish: bool = True
+
+
+class MapResultDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: Optional[uuid.UUID] = None
+    document_file_id: Optional[uuid.UUID] = None
+
+
+class DirectStudentResultDocumentMappingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exam_id: uuid.UUID
+    student_id: uuid.UUID
+    file_id: uuid.UUID
+    subject_id: Optional[uuid.UUID] = None
+    remarks: Optional[str] = Field(default=None, max_length=500)
 
 
 class ResultResponse(BaseModel):
@@ -63,8 +83,10 @@ class ResultResponse(BaseModel):
     max_marks: float
     percentage: float
     grade: Optional[str] = None
+    remarks: Optional[str] = None
     published_at: Optional[datetime] = None
     document_file_id: Optional[uuid.UUID] = None
+    document_filename: Optional[str] = None
     has_document: bool = False
 
 

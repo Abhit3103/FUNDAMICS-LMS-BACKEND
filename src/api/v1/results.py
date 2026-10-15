@@ -3,6 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, status, Query, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.core.exceptions import ValidationError
 from src.core.permissions import require_admin, require_student
 from src.database import get_db
 from src.models.user import User
@@ -14,6 +15,8 @@ from src.schemas.exam_result import (
     PublishExamResultsRequest,
     StudentExamSummaryResponse,
     ResultResponse,
+    MapResultDocumentRequest,
+    DirectStudentResultDocumentMappingRequest,
 )
 from src.services.result_service import result_service
 
@@ -146,6 +149,143 @@ async def download_result_document_admin(
         user=current_admin,
     )
     return FileResponse(path=storage_path, filename=filename, media_type=mime_type)
+
+
+@admin_results_router.post(
+    "/results/{result_id}/document-mapping",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+@admin_results_router.post(
+    "/results/{result_id}/map-file",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+    include_in_schema=False,
+)
+async def map_result_document(
+    result_id: uuid.UUID,
+    req: MapResultDocumentRequest,
+    request: Request,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Map an already uploaded file (file_id) to a student result by result ID."""
+    file_id = req.file_id or req.document_file_id
+    if not file_id:
+        raise ValidationError("Either file_id or document_file_id must be provided")
+    request_id = getattr(request.state, "request_id", None)
+    return await result_service.map_result_document(
+        db=db,
+        result_id=result_id,
+        file_id=file_id,
+        actor_id=current_admin.id,
+        request_id=request_id,
+    )
+
+
+@admin_results_router.post(
+    "/results/document-mapping",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def direct_map_result_document(
+    req: DirectStudentResultDocumentMappingRequest,
+    request: Request,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Directly map an uploaded document to a student result by exam and student ID."""
+    request_id = getattr(request.state, "request_id", None)
+    return await result_service.direct_map_student_result_document(
+        db=db,
+        exam_id=req.exam_id,
+        student_id=req.student_id,
+        file_id=req.file_id,
+        subject_id=req.subject_id,
+        remarks=req.remarks,
+        actor_id=current_admin.id,
+        request_id=request_id,
+    )
+
+
+@admin_results_router.post(
+    "/exams/{exam_id}/students/{student_id}/document-mapping",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def map_student_exam_document(
+    exam_id: uuid.UUID,
+    student_id: uuid.UUID,
+    req: MapResultDocumentRequest,
+    request: Request,
+    subject_id: Optional[uuid.UUID] = Query(None, description="Optional subject ID"),
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Map an uploaded document (file_id) to a student's exam result."""
+    file_id = req.file_id or req.document_file_id
+    if not file_id:
+        raise ValidationError("Either file_id or document_file_id must be provided")
+    request_id = getattr(request.state, "request_id", None)
+    return await result_service.direct_map_student_result_document(
+        db=db,
+        exam_id=exam_id,
+        student_id=student_id,
+        file_id=file_id,
+        subject_id=subject_id,
+        actor_id=current_admin.id,
+        request_id=request_id,
+    )
+
+
+@admin_results_router.post(
+    "/exams/{exam_id}/students/{student_id}/document",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def upload_student_exam_document(
+    exam_id: uuid.UUID,
+    student_id: uuid.UUID,
+    request: Request,
+    file: UploadFile = File(...),
+    subject_id: Optional[uuid.UUID] = Query(None, description="Optional subject ID"),
+    remarks: Optional[str] = Query(None, description="Optional remarks"),
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Directly upload and link a scorecard document for a student in an exam."""
+    request_id = getattr(request.state, "request_id", None)
+    return await result_service.direct_upload_student_result_document(
+        db=db,
+        exam_id=exam_id,
+        student_id=student_id,
+        file=file,
+        subject_id=subject_id,
+        remarks=remarks,
+        actor_id=current_admin.id,
+        request_id=request_id,
+    )
+
+
+@admin_results_router.delete(
+    "/results/{result_id}/document",
+    response_model=ResultResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def unlink_result_document(
+    result_id: uuid.UUID,
+    request: Request,
+    current_admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Admin-only: Unlink/remove attached document from a student result."""
+    request_id = getattr(request.state, "request_id", None)
+    return await result_service.unlink_result_document(
+        db=db,
+        result_id=result_id,
+        actor_id=current_admin.id,
+        request_id=request_id,
+    )
 
 
 # Student Results Endpoints
