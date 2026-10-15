@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -5,14 +6,22 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import SQLAlchemyError
 from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import UnauthorizedError, NotFoundError, ConflictError, ValidationError
+from src.core.exceptions import (
+    UnauthorizedError,
+    NotFoundError,
+    ConflictError,
+    ValidationError,
+    ServiceUnavailableError,
+)
 from src.core.security import verify_password, hash_password, hash_token, create_access_token
-from src.core.demo import DEMO_CREDENTIALS
 from src.models.user import User, UserStatus
 from src.models.auth_session import AuthSession, PasswordResetToken
 from src.schemas.auth import TokenResponse, UserProfileResponse
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -26,32 +35,16 @@ class AuthService:
         request_id: Optional[str] = None,
     ) -> TokenResponse:
         clean_email = email.lower().strip()
-        user = None
 
         try:
             stmt = select(User).where(User.email == clean_email)
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
-        except Exception:
-            # Database unreachable / offline in development
-            user = None
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error during user authentication query: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
         if not user or not verify_password(password, user.password_hash):
-            # Development mode demo credentials fallback
-            if settings.APP_ENV == "development" and clean_email in DEMO_CREDENTIALS:
-                demo = DEMO_CREDENTIALS[clean_email]
-                if password == demo["password"]:
-                    demo_session_id = uuid.uuid4()
-                    access_token = create_access_token(
-                        subject=str(demo["id"]),
-                        role=demo["role"].value,
-                        session_id=str(demo_session_id),
-                    )
-                    return TokenResponse(
-                        access_token=access_token,
-                        refresh_token=secrets.token_urlsafe(48),
-                        expires_in_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-                    )
             raise UnauthorizedError("Invalid email or password")
 
         if user.status != UserStatus.ACTIVE:
@@ -68,25 +61,30 @@ class AuthService:
             device_reference=device_reference,
             expires_at=refresh_expires_at,
         )
-        db.add(new_session)
-        await db.flush()
+        try:
+            db.add(new_session)
+            await db.flush()
 
-        # Create short-lived access token
-        access_token = create_access_token(
-            subject=str(user.id),
-            role=user.role.value,
-            session_id=str(new_session.id),
-        )
+            # Create short-lived access token
+            access_token = create_access_token(
+                subject=str(user.id),
+                role=user.role.value,
+                session_id=str(new_session.id),
+            )
 
-        await record_audit_log(
-            db=db,
-            action="USER_LOGIN",
-            resource_type="auth_session",
-            resource_id=str(new_session.id),
-            actor_id=user.id,
-            request_id=request_id,
-        )
-        await db.commit()
+            await record_audit_log(
+                db=db,
+                action="USER_LOGIN",
+                resource_type="auth_session",
+                resource_id=str(new_session.id),
+                actor_id=user.id,
+                request_id=request_id,
+            )
+            await db.commit()
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            logger.error("Database error persisting auth session during login: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
         return TokenResponse(
             access_token=access_token,
@@ -102,9 +100,13 @@ class AuthService:
         request_id: Optional[str] = None,
     ) -> TokenResponse:
         hashed_input = hash_token(raw_refresh_token)
-        stmt = select(AuthSession).where(AuthSession.refresh_token_hash == hashed_input)
-        result = await db.execute(stmt)
-        session = result.scalar_one_or_none()
+        try:
+            stmt = select(AuthSession).where(AuthSession.refresh_token_hash == hashed_input)
+            result = await db.execute(stmt)
+            session = result.scalar_one_or_none()
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error during token refresh query: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
         now = datetime.now(timezone.utc)
         if not session or session.revoked_at is not None or session.expires_at < now:
@@ -114,12 +116,19 @@ class AuthService:
         session.revoked_at = now
 
         # Fetch associated user
-        user_stmt = select(User).where(User.id == session.user_id)
-        u_result = await db.execute(user_stmt)
-        user = u_result.scalar_one_or_none()
+        try:
+            user_stmt = select(User).where(User.id == session.user_id)
+            u_result = await db.execute(user_stmt)
+            user = u_result.scalar_one_or_none()
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error fetching user for token refresh: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
         if not user or user.status != UserStatus.ACTIVE:
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
             raise UnauthorizedError("Associated user account is not active")
 
         # Mint rotated new refresh session
@@ -131,16 +140,21 @@ class AuthService:
             device_reference=device_reference or session.device_reference,
             expires_at=now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         )
-        db.add(new_session)
-        await db.flush()
+        try:
+            db.add(new_session)
+            await db.flush()
 
-        new_access_token = create_access_token(
-            subject=str(user.id),
-            role=user.role.value,
-            session_id=str(new_session.id),
-        )
+            new_access_token = create_access_token(
+                subject=str(user.id),
+                role=user.role.value,
+                session_id=str(new_session.id),
+            )
 
-        await db.commit()
+            await db.commit()
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            logger.error("Database error persisting rotated session: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
         return TokenResponse(
             access_token=new_access_token,
@@ -156,39 +170,45 @@ class AuthService:
         request_id: Optional[str] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
-        if session_id:
-            try:
-                s_uuid = uuid.UUID(session_id)
-                stmt = select(AuthSession).where(AuthSession.id == s_uuid, AuthSession.user_id == user.id)
+        try:
+            if session_id:
+                try:
+                    s_uuid = uuid.UUID(session_id)
+                    stmt = select(AuthSession).where(AuthSession.id == s_uuid, AuthSession.user_id == user.id)
+                    result = await db.execute(stmt)
+                    session = result.scalar_one_or_none()
+                    if session and session.revoked_at is None:
+                        session.revoked_at = now
+                        await record_audit_log(
+                            db=db,
+                            action="USER_LOGOUT",
+                            resource_type="auth_session",
+                            resource_id=str(session.id),
+                            actor_id=user.id,
+                            request_id=request_id,
+                        )
+                except ValueError:
+                    pass
+            else:
+                stmt = select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
                 result = await db.execute(stmt)
-                session = result.scalar_one_or_none()
-                if session and session.revoked_at is None:
-                    session.revoked_at = now
-                    await record_audit_log(
-                        db=db,
-                        action="USER_LOGOUT",
-                        resource_type="auth_session",
-                        resource_id=str(session.id),
-                        actor_id=user.id,
-                        request_id=request_id,
-                    )
-            except ValueError:
-                pass
-        else:
-            stmt = select(AuthSession).where(AuthSession.user_id == user.id, AuthSession.revoked_at.is_(None))
-            result = await db.execute(stmt)
-            sessions = result.scalars().all()
-            for s in sessions:
-                s.revoked_at = now
-            await record_audit_log(
-                db=db,
-                action="USER_LOGOUT_ALL",
-                resource_type="user",
-                resource_id=str(user.id),
-                actor_id=user.id,
-                request_id=request_id,
-            )
-        await db.commit()
+                sessions = result.scalars().all()
+                for s in sessions:
+                    s.revoked_at = now
+                await record_audit_log(
+                    db=db,
+                    action="USER_LOGOUT_ALL",
+                    resource_type="user",
+                    resource_id=str(user.id),
+                    actor_id=user.id,
+                    request_id=request_id,
+                )
+            await db.commit()
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            logger.error("Database error during logout: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
+
 
     @staticmethod
     async def register_student(

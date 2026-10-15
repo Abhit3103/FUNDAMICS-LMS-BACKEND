@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import date
 from typing import Optional
@@ -6,13 +7,15 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import SQLAlchemyError
 from src.config import settings
-from src.core.demo import DEMO_CREDENTIALS
-from src.core.exceptions import UnauthorizedError, ForbiddenError
+from src.core.exceptions import UnauthorizedError, ForbiddenError, ServiceUnavailableError
 from src.core.security import decode_access_token
 from src.database import get_db
 from src.models.user import User, UserStatus, UserRole, Student, Teacher
 from src.models.auth_session import AuthSession
+
+logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -41,7 +44,6 @@ async def get_current_user(
     except ValueError:
         raise UnauthorizedError("Malformed user identifier in token")
 
-    user = None
     try:
         # Fetch user with linked student and teacher records
         stmt = (
@@ -51,40 +53,11 @@ async def get_current_user(
         )
         result = await db.execute(stmt)
         user = result.scalar_one_or_none()
-    except Exception:
-        user = None
+    except (SQLAlchemyError, Exception) as exc:
+        logger.error("Database error retrieving current user: %s", exc)
+        raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
     if not user:
-        if settings.APP_ENV == "development":
-            for demo in DEMO_CREDENTIALS.values():
-                if demo["id"] == user_uuid:
-                    demo_user = User(
-                        id=demo["id"],
-                        name=demo["name"],
-                        email=demo["email"],
-                        phone=demo.get("phone"),
-                        role=demo["role"],
-                        status=UserStatus.ACTIVE,
-                        password_hash="demo_password_hash",
-                    )
-                    if demo["role"] == UserRole.TEACHER:
-                        demo_user.teacher = Teacher(
-                            id=uuid.uuid4(),
-                            user_id=demo["id"],
-                            teacher_code=demo.get("teacher_code", "TCH-001"),
-                            status="ACTIVE",
-                        )
-                    elif demo["role"] == UserRole.STUDENT:
-                        demo_user.student = Student(
-                            id=uuid.uuid4(),
-                            user_id=demo["id"],
-                            student_code=demo.get("student_code", "FND-2025-1042"),
-                            class_id=uuid.uuid4(),
-                            batch_id=uuid.uuid4(),
-                            admission_date=date.today(),
-                            status="ACTIVE",
-                        )
-                    return demo_user
         raise UnauthorizedError("User account no longer exists")
 
     if user.status != UserStatus.ACTIVE:
@@ -94,17 +67,22 @@ async def get_current_user(
     if session_id_str:
         try:
             session_uuid = uuid.UUID(session_id_str)
+        except ValueError:
+            raise UnauthorizedError("Malformed session identifier in token")
+
+        try:
             session_stmt = select(AuthSession).where(
                 AuthSession.id == session_uuid,
                 AuthSession.user_id == user.id,
             )
             sess_result = await db.execute(session_stmt)
             auth_session = sess_result.scalar_one_or_none()
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error verifying session revocation: %s", exc)
+            raise ServiceUnavailableError("Authentication service is temporarily unavailable. Please try again later.")
 
-            if not auth_session or auth_session.revoked_at is not None:
-                raise UnauthorizedError("Session has been revoked or expired")
-        except ValueError:
-            raise UnauthorizedError("Malformed session identifier in token")
+        if not auth_session or auth_session.revoked_at is not None:
+            raise UnauthorizedError("Session has been revoked or expired")
 
     user.current_session_id = session_id_str
 
@@ -118,10 +96,12 @@ async def get_optional_current_user(
     """
     Attempts to extract and verify JWT bearer token.
     Returns None if missing, expired, or invalid without raising an exception.
+    Propagates database service unavailability errors.
     """
     if not credentials or not credentials.credentials:
         return None
     try:
         return await get_current_user(credentials=credentials, db=db)
-    except Exception:
+    except (UnauthorizedError, ForbiddenError):
         return None
+

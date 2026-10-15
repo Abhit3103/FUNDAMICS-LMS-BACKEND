@@ -48,6 +48,11 @@ class RateLimitError(AppException):
         super().__init__(status_code=429, code="RATE_LIMITED", message=message)
 
 
+class ServiceUnavailableError(AppException):
+    def __init__(self, message: str = "Service temporarily unavailable. Please try again later."):
+        super().__init__(status_code=503, code="SERVICE_UNAVAILABLE", message=message)
+
+
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     content = {

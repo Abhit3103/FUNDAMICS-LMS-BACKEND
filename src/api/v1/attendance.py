@@ -211,7 +211,11 @@ async def get_my_attendance_summary(
     status_code=status.HTTP_200_OK,
 )
 async def get_my_attendance_logs(
-    month: str = Query(..., description="Target month in YYYY-MM format"),
+    month: str = Query(
+        ...,
+        description="Target month in YYYY-MM format",
+        pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
+    ),
     current_user: User = Depends(require_student),
     db: AsyncSession = Depends(get_db),
 ):

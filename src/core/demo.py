@@ -1,3 +1,13 @@
+"""
+Demo Credentials Fixture Data.
+
+SECURITY NOTICE:
+This module contains seed dictionaries strictly intended for offline database
+seeding scripts (e.g., `scripts/seed_demo_data.py`) and isolated test fixtures.
+It MUST NEVER be imported or used for runtime authentication fallback or
+synthetic user synthesis in any service, route, or dependency.
+"""
+
 import uuid
 from typing import Dict, Any
 from src.models.user import UserRole

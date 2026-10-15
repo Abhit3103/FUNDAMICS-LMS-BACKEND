@@ -1,4 +1,5 @@
 import io
+import logging
 import uuid
 from datetime import date, datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
@@ -6,9 +7,12 @@ import openpyxl
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import SQLAlchemyError
 from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import ValidationError, NotFoundError, ConflictError, AppException
+from src.core.exceptions import ValidationError, NotFoundError, ConflictError, AppException, ServiceUnavailableError
+
+logger = logging.getLogger(__name__)
 from src.models.academic import Class, Batch, Subject
 from src.models.student_attendance import StudentAttendance, AttendanceImport, AttendanceStatus, ImportStatus
 from src.models.system import AcademicCalendarEvent, CalendarEventType
@@ -98,20 +102,14 @@ class StudentAttendanceService:
     ) -> StudentAttendanceSummary:
         try:
             student = await db.get(Student, student_id)
-            if not student:
-                if settings.APP_ENV == "development":
-                    return StudentAttendanceSummary(
-                        student_id=student_id,
-                        student_code="FND-2025-1042",
-                        total_working_days=45,
-                        present_days=41,
-                        absent_days=3,
-                        late_days=1,
-                        excused_days=0,
-                        attendance_percentage=91.11,
-                    )
-                raise NotFoundError("Student not found")
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error retrieving student for attendance summary: %s", exc)
+            raise ServiceUnavailableError("Attendance service is temporarily unavailable. Please try again later.")
 
+        if not student:
+            raise NotFoundError("Student not found")
+
+        try:
             # Aggregate counts
             stmt = (
                 select(
@@ -123,40 +121,29 @@ class StudentAttendanceService:
             )
             result = await db.execute(stmt)
             status_counts = dict(result.all())
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error calculating attendance summary counts: %s", exc)
+            raise ServiceUnavailableError("Attendance service is temporarily unavailable. Please try again later.")
 
-            present = status_counts.get(AttendanceStatus.PRESENT, 0)
-            absent = status_counts.get(AttendanceStatus.ABSENT, 0)
-            late = status_counts.get(AttendanceStatus.LATE, 0)
-            excused = status_counts.get(AttendanceStatus.EXCUSED, 0)
+        present = status_counts.get(AttendanceStatus.PRESENT, 0)
+        absent = status_counts.get(AttendanceStatus.ABSENT, 0)
+        late = status_counts.get(AttendanceStatus.LATE, 0)
+        excused = status_counts.get(AttendanceStatus.EXCUSED, 0)
 
-            total_days = present + absent + late + excused
-            pct = round((present + late) / total_days * 100, 2) if total_days > 0 else 0.0
+        total_days = present + absent + late + excused
+        pct = round((present + late) / total_days * 100, 2) if total_days > 0 else 0.0
 
-            return StudentAttendanceSummary(
-                student_id=student.id,
-                student_code=student.student_code,
-                total_working_days=total_days,
-                present_days=present,
-                absent_days=absent,
-                late_days=late,
-                excused_days=excused,
-                attendance_percentage=pct,
-            )
-        except Exception as e:
-            if isinstance(e, AppException):
-                raise
-            if settings.APP_ENV == "development":
-                return StudentAttendanceSummary(
-                    student_id=student_id,
-                    student_code="FND-2025-1042",
-                    total_working_days=45,
-                    present_days=41,
-                    absent_days=3,
-                    late_days=1,
-                    excused_days=0,
-                    attendance_percentage=91.11,
-                )
-            raise
+        return StudentAttendanceSummary(
+            student_id=student.id,
+            student_code=student.student_code,
+            total_working_days=total_days,
+            present_days=present,
+            absent_days=absent,
+            late_days=late,
+            excused_days=excused,
+            attendance_percentage=pct,
+        )
+
 
     @staticmethod
     async def parse_and_validate_records(
@@ -663,62 +650,69 @@ class StudentAttendanceService:
         student_id: uuid.UUID,
         month: str,
     ) -> StudentMonthlyAttendanceResponse:
+        import calendar
+        import re
+
+        if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", month):
+            raise ValidationError("Month parameter must be in YYYY-MM format with valid month (01-12)")
+
+        year_str, month_str = month.split("-")
+        year = int(year_str)
+        month_num = int(month_str)
+
+        _, num_days = calendar.monthrange(year, month_num)
+        start_date = date(year, month_num, 1)
+        end_date = date(year, month_num, num_days)
+
+        try:
+            student = await db.get(Student, student_id)
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error retrieving student for monthly attendance logs: %s", exc)
+            raise ServiceUnavailableError("Attendance service is temporarily unavailable. Please try again later.")
+
+        if not student:
+            raise NotFoundError("Student not found")
+
         try:
             stmt = (
                 select(StudentAttendance)
                 .where(
                     StudentAttendance.student_id == student_id,
-                    func.to_char(StudentAttendance.date, "YYYY-MM") == month,
+                    StudentAttendance.date >= start_date,
+                    StudentAttendance.date <= end_date,
                 )
                 .order_by(StudentAttendance.date.asc())
             )
             res = await db.execute(stmt)
             records = res.scalars().all()
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error querying monthly attendance records: %s", exc)
+            raise ServiceUnavailableError("Attendance service is temporarily unavailable. Please try again later.")
 
-            daily_records = [
-                StudentDailyAttendanceRecord(
-                    date=r.date.isoformat(),
-                    status=r.status.value,
-                    session_count=1,
-                    remarks=r.remarks,
-                )
-                for r in records
-            ]
-
-            present_count = sum(1 for r in records if r.status == AttendanceStatus.PRESENT)
-            absent_count = sum(1 for r in records if r.status == AttendanceStatus.ABSENT)
-            total = len(records)
-            pct = round((present_count / total) * 100, 2) if total > 0 else 0.0
-
-            return StudentMonthlyAttendanceResponse(
-                month=month,
-                total_scheduled_days=total,
-                present_days=present_count,
-                absent_days=absent_count,
-                attendance_percentage=pct,
-                daily_records=daily_records,
+        daily_records = [
+            StudentDailyAttendanceRecord(
+                date=r.date.isoformat(),
+                status=r.status.value,
+                session_count=1,
+                remarks=r.remarks,
             )
-        except Exception as e:
-            if isinstance(e, AppException):
-                raise
-            if settings.APP_ENV == "development":
-                return StudentMonthlyAttendanceResponse(
-                    month=month,
-                    total_scheduled_days=26,
-                    present_days=24,
-                    absent_days=2,
-                    attendance_percentage=92.3,
-                    daily_records=[
-                        StudentDailyAttendanceRecord(
-                            date=f"{month}-{day:02d}",
-                            status="OFF" if (day % 7 == 0) else ("ABSENT" if day in (16, 25) else "PRESENT"),
-                            session_count=1,
-                            remarks="Sunday" if (day % 7 == 0) else ("Medical Leave" if day == 16 else None),
-                        )
-                        for day in range(1, 31)
-                    ],
-                )
-            raise
+            for r in records
+        ]
+
+        present_count = sum(1 for r in records if r.status == AttendanceStatus.PRESENT)
+        absent_count = sum(1 for r in records if r.status == AttendanceStatus.ABSENT)
+        total = len(records)
+        pct = round((present_count / total) * 100, 2) if total > 0 else 0.0
+
+        return StudentMonthlyAttendanceResponse(
+            month=month,
+            total_scheduled_days=total,
+            present_days=present_count,
+            absent_days=absent_count,
+            attendance_percentage=pct,
+            daily_records=daily_records,
+        )
+
 
 
 student_attendance_service = StudentAttendanceService()

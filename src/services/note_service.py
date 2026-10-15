@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import uuid
 from typing import List, Optional, Tuple
@@ -6,9 +7,18 @@ from fastapi import UploadFile
 from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import SQLAlchemyError
 from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import NotFoundError, ForbiddenError, ValidationError, AppException
+from src.core.exceptions import (
+    NotFoundError,
+    ForbiddenError,
+    ValidationError,
+    AppException,
+    ServiceUnavailableError,
+)
+
+logger = logging.getLogger(__name__)
 from src.models.academic import Class, Batch, Subject
 from src.models.note_file import FileRecord, Note
 from src.models.user import Student
@@ -119,11 +129,14 @@ class NoteService:
     ) -> List[NoteResponse]:
         try:
             student = await db.get(Student, student_id)
-            if not student:
-                if settings.APP_ENV == "development":
-                    return []
-                raise NotFoundError("Student not found")
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error retrieving student for notes: %s", exc)
+            raise ServiceUnavailableError("Material notes service is temporarily unavailable. Please try again later.")
 
+        if not student:
+            raise NotFoundError("Student not found")
+
+        try:
             # Query notes: published, matching student's class, and either batch is null (unrestricted) or matches student's batch
             stmt = (
                 select(Note)
@@ -137,30 +150,28 @@ class NoteService:
             )
             res = await db.execute(stmt)
             notes = res.scalars().all()
+        except (SQLAlchemyError, Exception) as exc:
+            logger.error("Database error querying notes: %s", exc)
+            raise ServiceUnavailableError("Material notes service is temporarily unavailable. Please try again later.")
 
-            return [
-                NoteResponse(
-                    id=n.id,
-                    title=n.title,
-                    description=n.description,
-                    class_id=n.class_id,
-                    batch_id=n.batch_id,
-                    subject_id=n.subject_id,
-                    subject_name=n.subject.name if n.subject else None,
-                    file_id=n.file_id,
-                    original_filename=n.file_record.original_filename if n.file_record else None,
-                    file_size_bytes=n.file_record.size_bytes if n.file_record else None,
-                    status=n.status,
-                    created_at=n.created_at,
-                )
-                for n in notes
-            ]
-        except Exception as e:
-            if isinstance(e, AppException):
-                raise
-            if settings.APP_ENV == "development":
-                return []
-            raise
+        return [
+            NoteResponse(
+                id=n.id,
+                title=n.title,
+                description=n.description,
+                class_id=n.class_id,
+                batch_id=n.batch_id,
+                subject_id=n.subject_id,
+                subject_name=n.subject.name if n.subject else None,
+                file_id=n.file_id,
+                original_filename=n.file_record.original_filename if n.file_record else None,
+                file_size_bytes=n.file_record.size_bytes if n.file_record else None,
+                status=n.status,
+                created_at=n.created_at,
+            )
+            for n in notes
+        ]
+
 
     @staticmethod
     async def get_authorized_file(

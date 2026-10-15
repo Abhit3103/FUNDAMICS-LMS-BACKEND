@@ -31,10 +31,23 @@ TestingSessionLocal = async_sessionmaker(
 )
 
 
+_DB_AVAILABLE = None
+
+
 @pytest_asyncio.fixture
 async def db_session():
     """Provides an isolated transaction for testing that always rolls back."""
-    connection = await engine.connect()
+    global _DB_AVAILABLE
+    if _DB_AVAILABLE is False:
+        pytest.skip("Test database on port 5433 is unavailable")
+
+    try:
+        connection = await engine.connect()
+        _DB_AVAILABLE = True
+    except Exception as exc:
+        _DB_AVAILABLE = False
+        pytest.skip(f"Test database is unavailable ({exc})")
+
     transaction = await connection.begin()
     session = AsyncSession(
         bind=connection,
