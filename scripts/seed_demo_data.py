@@ -117,7 +117,15 @@ async def seed():
             await session.flush()
 
             if demo["role"] == UserRole.TEACHER:
-                t_code = demo.get("teacher_code") or f"TCH-{uuid.uuid4().hex[:4].upper()}"
+                t_code = demo.get("teacher_code")
+                # Check if t_code exists
+                if t_code:
+                    code_exists = (await session.execute(select(Teacher).where(Teacher.teacher_code == t_code))).scalar_one_or_none()
+                    if code_exists:
+                        t_code = f"TCH-{uuid.uuid4().hex[:6].upper()}"
+                else:
+                    t_code = f"TCH-{uuid.uuid4().hex[:6].upper()}"
+
                 teacher = Teacher(
                     user_id=user.id,
                     teacher_code=t_code,
@@ -126,7 +134,14 @@ async def seed():
                 session.add(teacher)
 
             elif demo["role"] == UserRole.STUDENT:
-                s_code = demo.get("student_code") or f"STU-{uuid.uuid4().hex[:4].upper()}"
+                s_code = demo.get("student_code")
+                if s_code:
+                    code_exists = (await session.execute(select(Student).where(Student.student_code == s_code))).scalar_one_or_none()
+                    if code_exists:
+                        s_code = f"STU-{uuid.uuid4().hex[:6].upper()}"
+                else:
+                    s_code = f"STU-{uuid.uuid4().hex[:6].upper()}"
+
                 student = Student(
                     user_id=user.id,
                     student_code=s_code,
@@ -143,7 +158,6 @@ async def seed():
                     class_id=demo_class.id,
                     batch_id=demo_batch.id,
                     start_date=date.today(),
-                    academic_year="2025-2026",
                     status="ACTIVE",
                 )
                 session.add(enrollment)
