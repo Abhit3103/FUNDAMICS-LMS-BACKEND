@@ -16,7 +16,7 @@ async def inject_admin():
     engine = create_async_engine(settings.DATABASE_URL)
     async with AsyncSession(engine) as session:
         target_email = "admin@fundamics.com"
-        target_password = "Admin@123"
+        target_password = "Admin@1234"
         hashed = hash_password(target_password)
 
         stmt = select(User).where(User.email == target_email)
