@@ -18,6 +18,11 @@ class AppException(Exception):
         super().__init__(message)
 
 
+class BadRequestError(AppException):
+    def __init__(self, message: str = "Bad request", details: Optional[Any] = None):
+        super().__init__(status_code=400, code="BAD_REQUEST", message=message, details=details)
+
+
 class UnauthorizedError(AppException):
     def __init__(self, message: str = "Authentication required"):
         super().__init__(status_code=401, code="UNAUTHORIZED", message=message)

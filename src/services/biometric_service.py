@@ -1,10 +1,13 @@
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, date, time, timezone, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 from sqlalchemy import select, func, and_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from src.config import settings
 from src.core.audit import record_audit_log
-from src.core.exceptions import NotFoundError, UnauthorizedError
+from src.core.exceptions import NotFoundError, UnauthorizedError, BadRequestError, ConflictError
 from src.models.teacher_attendance import (
     BiometricDevice,
     BiometricEvent,
@@ -22,6 +25,9 @@ from src.schemas.teacher_attendance import (
     TeacherAttendanceOverallSummary,
     TeacherAttendanceRecordResponse,
     TeacherAttendanceReportResponse,
+    BiometricDeviceRegisterRequest,
+    BiometricDeviceUpdateRequest,
+    BiometricDeviceResponse,
 )
 
 
@@ -46,6 +52,21 @@ class BiometricService:
 
         device.last_seen_at = datetime.now(timezone.utc)
 
+        if not events:
+            return IngestBiometricEventsResponse(
+                processed=0,
+                duplicates_skipped=0,
+                unmapped_employees=0,
+                message="No events provided",
+            )
+
+        # Validate that client-supplied device_id in events matches authenticated device
+        for ev in events:
+            if ev.device_id != device.external_device_id:
+                raise BadRequestError(
+                    f"Device ID mismatch in payload: expected '{device.external_device_id}', received '{ev.device_id}'"
+                )
+
         # Cache active teachers by employee identifier
         t_stmt = select(Teacher).where(Teacher.status == "ACTIVE")
         t_res = await db.execute(t_stmt)
@@ -55,9 +76,16 @@ class BiometricService:
         duplicates_skipped = 0
         unmapped = 0
         now = datetime.now(timezone.utc)
+        seen_in_batch = set()
 
         for ev in events:
-            # Check for duplicate event
+            # Intra-batch deduplication check
+            if ev.external_event_id in seen_in_batch:
+                duplicates_skipped += 1
+                continue
+            seen_in_batch.add(ev.external_event_id)
+
+            # Database deduplication check
             dup_stmt = select(BiometricEvent.id).where(
                 BiometricEvent.device_id == device.id,
                 BiometricEvent.external_event_id == ev.external_event_id,
@@ -71,17 +99,26 @@ class BiometricService:
             if not matched_teacher:
                 unmapped += 1
 
-            new_ev = BiometricEvent(
-                device_id=device.id,
-                external_event_id=ev.external_event_id,
-                employee_identifier=ev.employee_identifier,
-                teacher_id=matched_teacher.id if matched_teacher else None,
-                event_type=ev.event_type,
-                event_at_utc=ev.event_at_utc,
-                received_at=now,
-            )
-            db.add(new_ev)
-            processed += 1
+            # Use subtransaction savepoint to safely handle concurrent identical submissions
+            try:
+                async with db.begin_nested():
+                    new_ev = BiometricEvent(
+                        device_id=device.id,
+                        external_event_id=ev.external_event_id,
+                        employee_identifier=ev.employee_identifier,
+                        teacher_id=matched_teacher.id if matched_teacher else None,
+                        event_type=ev.event_type,
+                        event_at_utc=ev.event_at_utc,
+                        raw_reference=ev.raw_reference,
+                        received_at=now,
+                    )
+                    db.add(new_ev)
+                    await db.flush()
+                processed += 1
+            except IntegrityError:
+                # Concurrent duplicate submission collided on uq_device_external_event
+                duplicates_skipped += 1
+                continue
 
         await record_audit_log(
             db=db,
@@ -107,34 +144,75 @@ class BiometricService:
         teacher_id: uuid.UUID,
         target_date: date,
     ) -> TeacherAttendanceDaySummary:
+        teacher = await db.get(Teacher, teacher_id)
+        if not teacher:
+            raise NotFoundError("Teacher not found")
+
         # Load institute required service hours
         set_res = await db.execute(select(InstituteSettings))
         settings_obj = set_res.scalar_one_or_none()
         req_hours = settings_obj.attendance_required_hours if settings_obj else 8
         required_mins = req_hours * 60
 
-        # Query events for teacher on date
+        # Compute workday UTC time range localized to institute timezone
+        tz_str = settings.TIMEZONE or "Asia/Kolkata"
+        try:
+            local_tz = ZoneInfo(tz_str)
+            # Test if zoneinfo actually has tzdata loaded on Windows
+            datetime.now(local_tz)
+        except Exception:
+            if "kolkata" in tz_str.lower() or "calcutta" in tz_str.lower() or "ist" in tz_str.lower():
+                local_tz = timezone(timedelta(hours=5, minutes=30))
+            else:
+                local_tz = timezone.utc
+
+        day_start_local = datetime.combine(target_date, time.min, tzinfo=local_tz)
+        day_end_local = datetime.combine(target_date, time.max, tzinfo=local_tz)
+        day_start_utc = day_start_local.astimezone(timezone.utc)
+        day_end_utc = day_end_local.astimezone(timezone.utc)
+
+        # Query events for teacher on target workday
         stmt = (
             select(BiometricEvent)
             .where(
                 BiometricEvent.teacher_id == teacher_id,
-                func.date(BiometricEvent.event_at_utc) == target_date,
+                BiometricEvent.event_at_utc >= day_start_utc,
+                BiometricEvent.event_at_utc <= day_end_utc,
             )
             .order_by(BiometricEvent.event_at_utc.asc())
         )
         res = await db.execute(stmt)
         events = res.scalars().all()
 
+        # Check for existing attendance record for idempotent recalculation
+        existing_stmt = select(TeacherAttendance).where(
+            TeacherAttendance.teacher_id == teacher_id,
+            TeacherAttendance.date == target_date,
+        )
+        existing_res = await db.execute(existing_stmt)
+        attendance = existing_res.scalar_one_or_none()
+
         if not events:
             # Absent record
-            attendance = TeacherAttendance(
-                teacher_id=teacher_id,
-                date=target_date,
-                served_minutes=0,
-                required_minutes=required_mins,
-                status=TeacherAttendanceStatus.ABSENT,
-            )
-            db.add(attendance)
+            if attendance:
+                attendance.check_in_at = None
+                attendance.check_out_at = None
+                attendance.served_minutes = 0
+                attendance.required_minutes = required_mins
+                attendance.status = TeacherAttendanceStatus.ABSENT
+                attendance.calculation_version += 1
+                attendance.source = "BIOMETRIC"
+            else:
+                attendance = TeacherAttendance(
+                    teacher_id=teacher_id,
+                    date=target_date,
+                    served_minutes=0,
+                    required_minutes=required_mins,
+                    status=TeacherAttendanceStatus.ABSENT,
+                    calculation_version=1,
+                    source="BIOMETRIC",
+                )
+                db.add(attendance)
             await db.commit()
             return TeacherAttendanceDaySummary.model_validate(attendance)
 
@@ -159,18 +237,29 @@ class BiometricService:
         else:
             status = TeacherAttendanceStatus.REVIEW_REQUIRED
 
-        attendance = TeacherAttendance(
-            teacher_id=teacher_id,
-            date=target_date,
-            check_in_at=check_in,
-            check_out_at=check_out,
-            served_minutes=served_minutes,
-            required_minutes=required_mins,
-            status=status,
-        )
-        db.add(attendance)
-        await db.commit()
+        if attendance:
+            attendance.check_in_at = check_in
+            attendance.check_out_at = check_out
+            attendance.served_minutes = served_minutes
+            attendance.required_minutes = required_mins
+            attendance.status = status
+            attendance.calculation_version += 1
+            attendance.source = "BIOMETRIC"
+        else:
+            attendance = TeacherAttendance(
+                teacher_id=teacher_id,
+                date=target_date,
+                check_in_at=check_in,
+                check_out_at=check_out,
+                served_minutes=served_minutes,
+                required_minutes=required_mins,
+                status=status,
+                calculation_version=1,
+                source="BIOMETRIC",
+            )
+            db.add(attendance)
 
+        await db.commit()
         return TeacherAttendanceDaySummary.model_validate(attendance)
 
     @staticmethod
@@ -396,6 +485,84 @@ class BiometricService:
             )
             for r in records
         ]
+
+    @staticmethod
+    async def register_device(
+        db: AsyncSession,
+        req: BiometricDeviceRegisterRequest,
+        request_id: Optional[str] = None,
+    ) -> BiometricDeviceResponse:
+        existing = await db.execute(
+            select(BiometricDevice.id).where(BiometricDevice.external_device_id == req.external_device_id.strip())
+        )
+        if existing.scalar_one_or_none():
+            raise ConflictError(f"Biometric device with external ID '{req.external_device_id.strip()}' already exists")
+
+        device = BiometricDevice(
+            external_device_id=req.external_device_id.strip(),
+            name=req.name.strip(),
+            model=req.model.strip() if req.model else "Secureye S-B8CB",
+            secret_reference=req.secret,
+            status="ACTIVE",
+        )
+        db.add(device)
+        await db.commit()
+        await db.refresh(device)
+
+        await record_audit_log(
+            db=db,
+            action="BIOMETRIC_DEVICE_REGISTERED",
+            resource_type="biometric_devices",
+            resource_id=str(device.id),
+            after_json={"external_device_id": device.external_device_id, "name": device.name, "model": device.model},
+            request_id=request_id,
+        )
+
+        return BiometricDeviceResponse.model_validate(device)
+
+    @staticmethod
+    async def list_devices(db: AsyncSession) -> List[BiometricDeviceResponse]:
+        res = await db.execute(select(BiometricDevice).order_by(BiometricDevice.created_at.asc()))
+        devices = res.scalars().all()
+        return [BiometricDeviceResponse.model_validate(d) for d in devices]
+
+    @staticmethod
+    async def update_device(
+        db: AsyncSession,
+        device_id: uuid.UUID,
+        req: BiometricDeviceUpdateRequest,
+        request_id: Optional[str] = None,
+    ) -> BiometricDeviceResponse:
+        device = await db.get(BiometricDevice, device_id)
+        if not device:
+            raise NotFoundError("Biometric device not found")
+
+        updated_fields = {}
+        if req.name is not None:
+            device.name = req.name.strip()
+            updated_fields["name"] = device.name
+        if req.model is not None:
+            device.model = req.model.strip()
+            updated_fields["model"] = device.model
+        if req.status is not None:
+            device.status = req.status
+            updated_fields["status"] = device.status
+        if req.secret is not None:
+            device.secret_reference = req.secret
+            updated_fields["secret_rotated"] = True
+
+        await record_audit_log(
+            db=db,
+            action="BIOMETRIC_DEVICE_UPDATED",
+            resource_type="biometric_devices",
+            resource_id=str(device.id),
+            after_json=updated_fields,
+            request_id=request_id,
+        )
+
+        await db.commit()
+        await db.refresh(device)
+        return BiometricDeviceResponse.model_validate(device)
 
 
 biometric_service = BiometricService()

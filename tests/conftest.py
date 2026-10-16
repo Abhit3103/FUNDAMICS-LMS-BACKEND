@@ -72,3 +72,15 @@ async def async_client(db_session):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Reset the login rate limiter state between tests to prevent inter-test 429 errors."""
+    from src.core.rate_limit import login_rate_limiter
+    login_rate_limiter._history.clear()
+    login_rate_limiter._last_request_time.clear()
+    yield
+    login_rate_limiter._history.clear()
+    login_rate_limiter._last_request_time.clear()
+
