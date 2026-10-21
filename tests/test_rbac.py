@@ -2,10 +2,16 @@ import uuid
 from datetime import date
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from src.core.exceptions import ForbiddenError
 from src.core.permissions import require_admin, require_teacher, require_student
+from src.core.dependencies import get_current_user
+from src.database import get_db
+from src.main import app
 from src.models.user import User, UserRole, Teacher, Student
+
+
 def make_user(role: UserRole) -> User:
     user = User(
         role=role,
@@ -89,6 +95,39 @@ def test_teacher_not_allowed_as_student():
 
     with pytest.raises(ForbiddenError):
         require_student(user)
+
+
+@pytest.mark.asyncio
+async def test_only_admin_can_create_notices():
+    async def provide_user():
+        return current_user
+
+    async def provide_db():
+        yield None
+
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[get_current_user] = provide_user
+    app.dependency_overrides[get_db] = provide_db
+
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            for role in (UserRole.STUDENT, UserRole.TEACHER):
+                current_user = make_user(role)
+                response = await client.post(
+                    "/api/v1/admin/notices",
+                    json={
+                        "title": "Restricted notice",
+                        "content": "Only admins may publish this.",
+                        "target_audience": "ALL",
+                    },
+                )
+                assert response.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)
 
 
 def test_student_not_allowed_as_teacher():

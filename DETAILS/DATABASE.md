@@ -1,4 +1,5 @@
-# FUNDAMICS LMS Backend — Database Architecture & Schema Specification
+
+ FUNDAMICS LMS Backend — Database Architecture & Schema Specification
 
 This document provides the complete, authoritative specification of the PostgreSQL database schema, relational models, constraints, and migration management.
 

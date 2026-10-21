@@ -33,10 +33,7 @@ def create_access_token(
     session_id: Optional[str] = None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
-    """
-    Generate short-lived JWT access token.
-    Claims contain: sub (user_id), role, session_id, iat, exp.
-    """
+
     now = datetime.now(timezone.utc)
     if expires_delta:
         expire = now + expires_delta
@@ -56,10 +53,6 @@ def create_access_token(
 
 
 def decode_access_token(token: str) -> Dict[str, Any]:
-    """
-    Decode and validate JWT access token.
-    Raises UnauthorizedError if token is invalid or expired.
-    """
     try:
         payload = jwt.decode(
             token,

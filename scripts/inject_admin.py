@@ -1,8 +1,9 @@
-import asyncio
-from datetime import datetime, timezone
-import uuid
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy import select
+import sys
+from pathlib import Path
+
+# Ensure project root is in sys.path when script is executed directly
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from src.config import settings
 from src.core.security import hash_password, create_access_token
 from src.models.user import User, UserRole, UserStatus
