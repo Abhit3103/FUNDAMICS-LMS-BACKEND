@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Hostinger / Standard SMTP Email Configuration
     SMTP_HOST: str = "smtp.hostinger.com"
-    SMTP_PORT: int = 465
+    SMTP_PORT: int = 587
     SMTP_USE_TLS: bool = True
     SMTP_USERNAME: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
@@ -54,11 +54,6 @@ class Settings(BaseSettings):
     # Token Expiration Settings
     EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 24
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
-
-    # Brevo (Sendinblue) Transactional Email (Optional legacy fallback)
-    BREVO_API_KEY: Optional[str] = None
-    BREVO_SENDER_EMAIL: str = "info@fundamicstutorials.in"
-    BREVO_SENDER_NAME: str = "FUNDAMICS TUTORIALS"
 
     # WhatsApp Business Cloud API
     WHATSAPP_API_TOKEN: Optional[str] = None

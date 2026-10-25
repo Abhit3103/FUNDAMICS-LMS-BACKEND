@@ -559,6 +559,10 @@ class UserService:
         if not user or not user.student:
             raise NotFoundError("Student user registration not found")
 
+        already_active = (user.status == UserStatus.ACTIVE and user.student.status == "ACTIVE")
+        if already_active:
+            logger.info("Student user %s is already ACTIVE. Verifying student records and re-sending notification.", user.id)
+
         user.status = UserStatus.ACTIVE
         user.student.status = "ACTIVE"
 
@@ -574,17 +578,25 @@ class UserService:
             resource_type="user",
             resource_id=str(user.id),
             actor_id=actor_id,
-            after_json={"remarks": remarks},
+            after_json={"remarks": remarks, "reapproval": already_active},
             request_id=request_id,
         )
 
-        await notification_service.send_approval_notification(
-            db=db,
-            to_email=user.email,
-            user_name=user.name,
-            approved=True,
-            to_phone=user.phone,
-        )
+        try:
+            await notification_service.send_approval_notification(
+                db=db,
+                to_email=user.email,
+                user_name=user.name,
+                approved=True,
+                to_phone=user.phone,
+            )
+        except Exception as exc:
+            logger.error(
+                "Student user %s was activated, but approval notification dispatch encountered an error: %s",
+                user.id,
+                exc,
+            )
+
         await db.commit()
 
         return await UserService.get_student(db, user.student.id)
@@ -616,14 +628,22 @@ class UserService:
             request_id=request_id,
         )
 
-        await notification_service.send_approval_notification(
-            db=db,
-            to_email=user.email,
-            user_name=user.name,
-            approved=False,
-            rejection_reason=reason,
-            to_phone=user.phone,
-        )
+        try:
+            await notification_service.send_approval_notification(
+                db=db,
+                to_email=user.email,
+                user_name=user.name,
+                approved=False,
+                rejection_reason=reason,
+                to_phone=user.phone,
+            )
+        except Exception as exc:
+            logger.error(
+                "Student user %s was rejected, but rejection notification dispatch encountered an error: %s",
+                user.id,
+                exc,
+            )
+
         await db.commit()
         return True
 

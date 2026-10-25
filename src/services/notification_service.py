@@ -30,6 +30,7 @@ class BrevoEmailAdapter:
             )
             return {
                 "success": True,
+                "mocked": True,
                 "message_id": f"mock-brevo-{uuid.uuid4()}",
                 "provider": "brevo-mock",
             }
@@ -58,6 +59,7 @@ class BrevoEmailAdapter:
                     data = resp.json()
                     return {
                         "success": True,
+                        "mocked": False,
                         "message_id": data.get("messageId", str(uuid.uuid4())),
                         "provider": "brevo",
                     }
@@ -65,6 +67,7 @@ class BrevoEmailAdapter:
                     logger.error(f"Brevo API error: {resp.status_code} - {resp.text}")
                     return {
                         "success": False,
+                        "mocked": False,
                         "error": f"Brevo HTTP {resp.status_code}: {resp.text}",
                         "provider": "brevo",
                     }
@@ -72,6 +75,7 @@ class BrevoEmailAdapter:
             logger.exception("Brevo email dispatch failed")
             return {
                 "success": False,
+                "mocked": False,
                 "error": str(exc),
                 "provider": "brevo",
             }
@@ -96,6 +100,7 @@ class WhatsAppBusinessAdapter:
             )
             return {
                 "success": True,
+                "mocked": True,
                 "message_id": f"mock-wa-{uuid.uuid4()}",
                 "provider": "whatsapp-mock",
             }
@@ -170,6 +175,34 @@ class NotificationService:
         self.email_adapter = BrevoEmailAdapter()
         self.whatsapp_adapter = WhatsAppBusinessAdapter()
 
+    @staticmethod
+    def _resolve_status(result: Dict[str, Any]) -> str:
+        """
+        Derive accurate status for notification auditing:
+        - SKIPPED: Notifications globally disabled.
+        - MOCKED: Simulated in local/test environment because credentials are unset.
+        - SENT: Provider accepted the message (SMTP relay or WhatsApp Cloud API).
+        - FAILED: Provider rejected the message, network error, or timeout.
+        """
+        provider = str(result.get("provider", "")).lower()
+        if provider == "disabled" or result.get("disabled"):
+            return "SKIPPED"
+        if result.get("mocked") or "mock" in provider:
+            return "MOCKED"
+        if result.get("success"):
+            return "SENT"
+        return "FAILED"
+
+    @staticmethod
+    def _resolve_failure_code(status: str, result: Dict[str, Any]) -> Optional[str]:
+        if status == "MOCKED":
+            return result.get("error") or "MOCK_MODE_NO_CREDENTIALS"
+        if status == "SKIPPED":
+            return "NOTIFICATIONS_DISABLED"
+        if status == "FAILED":
+            return result.get("error") or result.get("failure_category") or "DELIVERY_FAILED"
+        return None
+
     async def log_record(
         self,
         db: AsyncSession,
@@ -186,7 +219,7 @@ class NotificationService:
             channel=channel,
             status=status,
             payload_reference=payload_ref,
-            sent_at=datetime.now(timezone.utc) if status == "DELIVERED" else None,
+            sent_at=datetime.now(timezone.utc) if status in ("SENT", "DELIVERED") else None,
             failure_code=failure_code,
         )
         db.add(record)
@@ -201,6 +234,14 @@ class NotificationService:
         token: str,
     ) -> bool:
         if not settings.NOTIFICATIONS_ENABLED:
+            await self.log_record(
+                db=db,
+                event_type="EMAIL_VERIFICATION",
+                recipient=to_email,
+                channel="EMAIL",
+                status="SKIPPED",
+                failure_code="NOTIFICATIONS_DISABLED",
+            )
             return False
 
         from src.services.email_service import email_service
@@ -209,7 +250,8 @@ class NotificationService:
             user_name=user_name,
             token=token,
         )
-        status_str = "DELIVERED" if result.get("success") else "FAILED"
+        status_str = self._resolve_status(result)
+        failure_code = self._resolve_failure_code(status_str, result)
         await self.log_record(
             db=db,
             event_type="EMAIL_VERIFICATION",
@@ -217,9 +259,9 @@ class NotificationService:
             channel="EMAIL",
             status=status_str,
             payload_ref=result.get("message_id"),
-            failure_code=result.get("error"),
+            failure_code=failure_code,
         )
-        return result.get("success", False)
+        return bool(result.get("success") and not result.get("mocked"))
 
     async def send_password_reset(
         self,
@@ -230,6 +272,14 @@ class NotificationService:
         to_phone: Optional[str] = None,
     ) -> bool:
         if not settings.NOTIFICATIONS_ENABLED:
+            await self.log_record(
+                db=db,
+                event_type="PASSWORD_RESET",
+                recipient=to_email,
+                channel="EMAIL",
+                status="SKIPPED",
+                failure_code="NOTIFICATIONS_DISABLED",
+            )
             return False
 
         from src.services.email_service import email_service
@@ -238,14 +288,16 @@ class NotificationService:
             user_name=user_name,
             token=token,
         )
+        status_str = self._resolve_status(email_res)
+        failure_code = self._resolve_failure_code(status_str, email_res)
         await self.log_record(
             db=db,
             event_type="PASSWORD_RESET",
             recipient=to_email,
             channel="EMAIL",
-            status="DELIVERED" if email_res.get("success") else "FAILED",
+            status=status_str,
             payload_ref=email_res.get("message_id"),
-            failure_code=email_res.get("error"),
+            failure_code=failure_code,
         )
 
         if to_phone:
@@ -253,17 +305,19 @@ class NotificationService:
             wa_res = await self.whatsapp_adapter.send_message(
                 to_phone=to_phone, body_text=wa_text
             )
+            wa_status_str = self._resolve_status(wa_res)
+            wa_failure_code = self._resolve_failure_code(wa_status_str, wa_res)
             await self.log_record(
                 db=db,
                 event_type="PASSWORD_RESET",
                 recipient=to_phone,
                 channel="WHATSAPP",
-                status="DELIVERED" if wa_res.get("success") else "FAILED",
+                status=wa_status_str,
                 payload_ref=wa_res.get("message_id"),
-                failure_code=wa_res.get("error"),
+                failure_code=wa_failure_code,
             )
 
-        return email_res.get("success", False)
+        return bool(email_res.get("success") and not email_res.get("mocked"))
 
     async def send_approval_notification(
         self,
@@ -274,7 +328,16 @@ class NotificationService:
         rejection_reason: Optional[str] = None,
         to_phone: Optional[str] = None,
     ) -> bool:
+        event_type = "REGISTRATION_APPROVED" if approved else "REGISTRATION_REJECTED"
         if not settings.NOTIFICATIONS_ENABLED:
+            await self.log_record(
+                db=db,
+                event_type=event_type,
+                recipient=to_email,
+                channel="EMAIL",
+                status="SKIPPED",
+                failure_code="NOTIFICATIONS_DISABLED",
+            )
             return False
 
         if approved:
@@ -308,31 +371,35 @@ class NotificationService:
             html_content=html,
             text_content=wa_text,
         )
+        status_str = self._resolve_status(email_res)
+        failure_code = self._resolve_failure_code(status_str, email_res)
         await self.log_record(
             db=db,
-            event_type="REGISTRATION_APPROVED" if approved else "REGISTRATION_REJECTED",
+            event_type=event_type,
             recipient=to_email,
             channel="EMAIL",
-            status="DELIVERED" if email_res.get("success") else "FAILED",
+            status=status_str,
             payload_ref=email_res.get("message_id"),
-            failure_code=email_res.get("error"),
+            failure_code=failure_code,
         )
 
         if to_phone:
             wa_res = await self.whatsapp_adapter.send_message(
                 to_phone=to_phone, body_text=wa_text
             )
+            wa_status_str = self._resolve_status(wa_res)
+            wa_failure_code = self._resolve_failure_code(wa_status_str, wa_res)
             await self.log_record(
                 db=db,
-                event_type="REGISTRATION_APPROVED" if approved else "REGISTRATION_REJECTED",
+                event_type=event_type,
                 recipient=to_phone,
                 channel="WHATSAPP",
-                status="DELIVERED" if wa_res.get("success") else "FAILED",
+                status=wa_status_str,
                 payload_ref=wa_res.get("message_id"),
-                failure_code=wa_res.get("error"),
+                failure_code=wa_failure_code,
             )
 
-        return True
+        return bool(email_res.get("success") and not email_res.get("mocked"))
 
 
 notification_service = NotificationService()

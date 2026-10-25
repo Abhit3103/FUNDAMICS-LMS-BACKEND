@@ -9,22 +9,107 @@ from src.config import settings
 logger = logging.getLogger(__name__)
 
 
+def mask_email(email: Optional[str]) -> str:
+    """Safely mask an email address for structured logging (e.g., a***n@fundamics.in)."""
+    if not email or "@" not in email:
+        return "<invalid-email>"
+    parts = email.split("@", 1)
+    name, domain = parts[0], parts[1]
+    if len(name) <= 2:
+        masked_name = name[0] + "*"
+    else:
+        masked_name = name[0] + "*" * (len(name) - 2) + name[-1]
+    return f"{masked_name}@{domain}"
+
+
+_UNSET = object()
+
+
 class EmailService:
     """
     Reusable asynchronous email service providing transactional email delivery
     via Hostinger SMTP (or standard SMTP servers) using aiosmtplib.
     Configured via environment variables with safe error handling and sanitization.
+    Supports port 587 (STARTTLS) and port 465 (direct SSL/TLS).
     """
 
-    def __init__(self):
-        self.host = settings.SMTP_HOST
-        self.port = settings.SMTP_PORT
-        self.use_tls = settings.SMTP_USE_TLS
-        self.username = settings.SMTP_USERNAME
-        self.password = settings.SMTP_PASSWORD
-        self.mail_from = settings.MAIL_FROM
-        self.mail_from_name = settings.MAIL_FROM_NAME
-        self.timeout = 15.0
+    def __init__(
+        self,
+        host: Any = _UNSET,
+        port: Any = _UNSET,
+        use_tls: Any = _UNSET,
+        username: Any = _UNSET,
+        password: Any = _UNSET,
+        mail_from: Any = _UNSET,
+        mail_from_name: Any = _UNSET,
+        timeout: float = 15.0,
+    ):
+        self._host = host
+        self._port = port
+        self._use_tls = use_tls
+        self._username = username
+        self._password = password
+        self._mail_from = mail_from
+        self._mail_from_name = mail_from_name
+        self.timeout = timeout
+
+    @property
+    def host(self) -> str:
+        return settings.SMTP_HOST if self._host is _UNSET else self._host
+
+    @host.setter
+    def host(self, value: str):
+        self._host = value
+
+    @property
+    def port(self) -> int:
+        val = settings.SMTP_PORT if self._port is _UNSET else self._port
+        return int(val) if val is not None else 587
+
+    @port.setter
+    def port(self, value: int):
+        self._port = int(value)
+
+    @property
+    def use_tls(self) -> bool:
+        val = settings.SMTP_USE_TLS if self._use_tls is _UNSET else self._use_tls
+        return bool(val)
+
+    @use_tls.setter
+    def use_tls(self, value: bool):
+        self._use_tls = bool(value)
+
+    @property
+    def username(self) -> Optional[str]:
+        return settings.SMTP_USERNAME if self._username is _UNSET else self._username
+
+    @username.setter
+    def username(self, value: Optional[str]):
+        self._username = value
+
+    @property
+    def password(self) -> Optional[str]:
+        return settings.SMTP_PASSWORD if self._password is _UNSET else self._password
+
+    @password.setter
+    def password(self, value: Optional[str]):
+        self._password = value
+
+    @property
+    def mail_from(self) -> str:
+        return settings.MAIL_FROM if self._mail_from is _UNSET else self._mail_from
+
+    @mail_from.setter
+    def mail_from(self, value: str):
+        self._mail_from = value
+
+    @property
+    def mail_from_name(self) -> str:
+        return settings.MAIL_FROM_NAME if self._mail_from_name is _UNSET else self._mail_from_name
+
+    @mail_from_name.setter
+    def mail_from_name(self, value: str):
+        self._mail_from_name = value
 
     async def send_email(
         self,
@@ -40,17 +125,24 @@ class EmailService:
         Never leaks passwords or raw credentials in logs or errors.
         """
         if not settings.NOTIFICATIONS_ENABLED:
-            logger.info("Notifications are globally disabled; suppressing email to %s", to_email)
-            return {"success": True, "message_id": f"disabled-{uuid.uuid4()}", "provider": "disabled"}
+            logger.info("[NOTIFICATIONS_DISABLED] Globally disabled; skipping email to %s", mask_email(to_email))
+            return {
+                "success": False,
+                "mocked": False,
+                "disabled": True,
+                "message_id": f"disabled-{uuid.uuid4()}",
+                "provider": "disabled",
+            }
 
         if not self.username or not self.password:
             logger.info(
-                "[DEV/MOCK SMTP] No SMTP credentials configured. Mocking dispatch to %s | Subject: %s",
-                to_email,
+                "[MOCK SMTP] No SMTP credentials configured. Mocking dispatch to %s | Subject: %s",
+                mask_email(to_email),
                 subject,
             )
             return {
                 "success": True,
+                "mocked": True,
                 "message_id": f"mock-smtp-{uuid.uuid4()}",
                 "provider": "mock-smtp",
             }
@@ -67,10 +159,28 @@ class EmailService:
         if html_content:
             message.add_alternative(html_content, subtype="html")
 
-        # Determine TLS / SSL connection settings
-        # Port 465 is standard SMTPS (direct SSL/TLS); port 587 is standard STARTTLS
-        is_direct_ssl = (self.port == 465) or (self.use_tls and self.port != 587)
-        is_starttls = (self.port == 587) or (self.use_tls and not is_direct_ssl)
+        # Determine TLS / SSL connection settings:
+        # Port 465 is direct SSL/TLS; Port 587 (or explicit use_tls) uses STARTTLS
+        if self.port == 465:
+            use_direct_tls = True
+            use_starttls = False
+        elif self.port == 587 or self.use_tls:
+            use_direct_tls = False
+            use_starttls = True
+        else:
+            use_direct_tls = False
+            use_starttls = False
+
+        logger.info(
+            "[SMTP DISPATCH] Connecting to %s:%s (direct_tls=%s, starttls=%s, mail_from=%s) for recipient=%s | Subject: '%s'",
+            self.host,
+            self.port,
+            use_direct_tls,
+            use_starttls,
+            self.mail_from,
+            mask_email(to_email),
+            subject,
+        )
 
         try:
             client_kwargs: Dict[str, Any] = {
@@ -79,47 +189,122 @@ class EmailService:
                 "username": self.username,
                 "password": self.password,
                 "timeout": self.timeout,
+                "use_tls": use_direct_tls,
+                "start_tls": use_starttls,
             }
-            if is_direct_ssl:
-                client_kwargs["use_tls"] = True
-                client_kwargs["start_tls"] = False
-            elif is_starttls:
-                client_kwargs["use_tls"] = False
-                client_kwargs["start_tls"] = True
-            else:
-                client_kwargs["use_tls"] = False
-                client_kwargs["start_tls"] = False
 
             await aiosmtplib.send(message, **client_kwargs)
             message_id = f"smtp-{uuid.uuid4()}"
-            logger.info("Successfully dispatched email via Hostinger SMTP to %s (msg_id: %s)", to_email, message_id)
+            logger.info(
+                "[SMTP SUCCESS] Dispatched email via %s:%s to %s (msg_id: %s)",
+                self.host,
+                self.port,
+                mask_email(to_email),
+                message_id,
+            )
             return {
                 "success": True,
+                "mocked": False,
                 "message_id": message_id,
                 "provider": "hostinger-smtp",
             }
-        except aiosmtplib.SMTPException as exc:
-            # Safe logging: log exception type and safe representation without secrets
+        except aiosmtplib.SMTPConnectTimeoutError as exc:
             logger.error(
-                "SMTP transmission failed for recipient %s [Error: %s: %s]",
-                to_email,
+                "[SMTP_ERROR:CONNECT_TIMEOUT] Connection timed out connecting to %s:%s (timeout=%ss). "
+                "Cloud platforms (e.g. Render) frequently block port 465; ensure SMTP_PORT=587 (STARTTLS) is used. Recipient: %s",
+                self.host,
+                self.port,
+                self.timeout,
+                mask_email(to_email),
+            )
+            return {
+                "success": False,
+                "mocked": False,
+                "error": "SMTP Error: SMTPConnectTimeoutError",
+                "failure_category": "TCP_CONNECT_TIMEOUT_OR_BLOCKED_PORT",
+                "provider": "hostinger-smtp",
+            }
+        except aiosmtplib.SMTPConnectError as exc:
+            logger.error(
+                "[SMTP_ERROR:CONNECT_FAILED] TCP connection to %s:%s failed. Recipient: %s. Error: %s",
+                self.host,
+                self.port,
+                mask_email(to_email),
+                type(exc).__name__,
+            )
+            return {
+                "success": False,
+                "mocked": False,
+                "error": f"SMTP Error: {type(exc).__name__}",
+                "failure_category": "TCP_CONNECT_FAILED",
+                "provider": "hostinger-smtp",
+            }
+        except aiosmtplib.SMTPAuthenticationError as exc:
+            logger.error(
+                "[SMTP_ERROR:AUTH_FAILED] SMTP Authentication rejected for username '%s' at %s:%s",
+                self.username,
+                self.host,
+                self.port,
+            )
+            return {
+                "success": False,
+                "mocked": False,
+                "error": "SMTP Error: SMTPAuthenticationError",
+                "failure_category": "AUTHENTICATION_FAILED",
+                "provider": "hostinger-smtp",
+            }
+        except aiosmtplib.SMTPSenderRefused as exc:
+            logger.error(
+                "[SMTP_ERROR:SENDER_REFUSED] Sender address '%s' was rejected by %s:%s. Ensure MAIL_FROM matches authenticated mailbox '%s'.",
+                self.mail_from,
+                self.host,
+                self.port,
+                self.username,
+            )
+            return {
+                "success": False,
+                "mocked": False,
+                "error": f"SMTP Error: SMTPSenderRefused",
+                "failure_category": "SENDER_REJECTED",
+                "provider": "hostinger-smtp",
+            }
+        except aiosmtplib.SMTPRecipientRefused as exc:
+            logger.error(
+                "[SMTP_ERROR:RECIPIENT_REFUSED] Recipient '%s' was rejected by server.",
+                mask_email(to_email),
+            )
+            return {
+                "success": False,
+                "mocked": False,
+                "error": "SMTP Error: SMTPRecipientRefused",
+                "failure_category": "RECIPIENT_REJECTED",
+                "provider": "hostinger-smtp",
+            }
+        except aiosmtplib.SMTPException as exc:
+            logger.error(
+                "[SMTP_ERROR:PROTOCOL] SMTP transmission failed for recipient %s [Error: %s: %s]",
+                mask_email(to_email),
                 type(exc).__name__,
                 exc.message if hasattr(exc, "message") else str(exc),
             )
             return {
                 "success": False,
+                "mocked": False,
                 "error": f"SMTP Error: {type(exc).__name__}",
+                "failure_category": "SMTP_PROTOCOL_ERROR",
                 "provider": "hostinger-smtp",
             }
         except Exception as exc:
             logger.error(
-                "Unexpected failure during email dispatch to %s [Error: %s]",
-                to_email,
+                "[SMTP_ERROR:UNEXPECTED] Unexpected failure during email dispatch to %s [Error: %s]",
+                mask_email(to_email),
                 type(exc).__name__,
             )
             return {
                 "success": False,
+                "mocked": False,
                 "error": f"Email dispatch failed: {type(exc).__name__}",
+                "failure_category": "UNEXPECTED_ERROR",
                 "provider": "hostinger-smtp",
             }
 

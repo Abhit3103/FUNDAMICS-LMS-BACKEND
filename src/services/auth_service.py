@@ -3,11 +3,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import SQLAlchemyError
 from src.config import settings
+from src.services.email_service import mask_email
 from src.core.audit import record_audit_log
 from src.core.exceptions import (
     UnauthorizedError,
@@ -321,7 +322,7 @@ class AuthService:
         from src.schemas.auth import MessageResponse
 
         clean_email = email.lower().strip()
-        stmt = select(User).where(User.email == clean_email)
+        stmt = select(User).where(func.lower(func.trim(User.email)) == clean_email)
         res = await db.execute(stmt)
         user = res.scalar_one_or_none()
 
@@ -337,12 +338,16 @@ class AuthService:
             )
             db.add(v_token)
             await db.flush()
-            await notification_service.send_verification_email(
-                db=db,
-                to_email=user.email,
-                user_name=user.name,
-                token=raw_token,
-            )
+            try:
+                await notification_service.send_verification_email(
+                    db=db,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                )
+            except Exception as exc:
+                logger.error("Verification email dispatch failed for user %s: %s", user.id, exc)
+
             await record_audit_log(
                 db=db,
                 action="EMAIL_VERIFICATION_REQUESTED",
@@ -352,6 +357,18 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+        else:
+            if not user:
+                logger.info(
+                    "Verification requested for unregistered email '%s' - returning generic response (enumeration defense)",
+                    mask_email(clean_email),
+                )
+            else:
+                logger.info(
+                    "Verification requested for user %s who is already verified (verified_at=%s)",
+                    user.id,
+                    user.email_verified_at,
+                )
 
         return MessageResponse(
             success=True,
@@ -432,7 +449,7 @@ class AuthService:
         from src.schemas.auth import MessageResponse
 
         clean_email = email.lower().strip()
-        stmt = select(User).where(User.email == clean_email)
+        stmt = select(User).where(func.lower(func.trim(User.email)) == clean_email)
         res = await db.execute(stmt)
         user = res.scalar_one_or_none()
 
@@ -447,13 +464,22 @@ class AuthService:
             )
             db.add(reset_record)
             await db.flush()
-            await notification_service.send_password_reset(
-                db=db,
-                to_email=user.email,
-                user_name=user.name,
-                token=raw_token,
-                to_phone=user.phone,
-            )
+
+            try:
+                await notification_service.send_password_reset(
+                    db=db,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                    to_phone=user.phone,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error during password reset notification dispatch for user %s: %s",
+                    user.id,
+                    exc,
+                )
+
             await record_audit_log(
                 db=db,
                 action="PASSWORD_RESET_REQUESTED",
@@ -463,6 +489,18 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+        else:
+            if not user:
+                logger.info(
+                    "Password reset requested for unregistered email '%s' - returning generic success (enumeration defense)",
+                    mask_email(clean_email),
+                )
+            else:
+                logger.info(
+                    "Password reset requested for user %s with non-active status '%s' - returning generic success (enumeration defense)",
+                    user.id,
+                    user.status,
+                )
 
         return MessageResponse(
             success=True,

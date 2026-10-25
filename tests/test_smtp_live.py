@@ -76,6 +76,7 @@ async def test_smtp_raw_connection():
         hostname=settings.SMTP_HOST,
         port=settings.SMTP_PORT,
         use_tls=(settings.SMTP_PORT == 465),
+        start_tls=False,
         timeout=20,
     )
 

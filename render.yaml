@@ -2,7 +2,7 @@ services:
   - type: web
     name: fundamics-lms-backend
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
@@ -27,3 +27,21 @@ services:
         value: Asia/Kolkata
       - key: CORS_ORIGINS
         value: "http://localhost:3000,http://localhost:5173,http://localhost:8081,https://fundamicstutorials.in,https://www.fundamicstutorials.in"
+      - key: SMTP_HOST
+        value: smtp.hostinger.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USE_TLS
+        value: "true"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        value: info@fundemicstutorials.in
+      - key: MAIL_FROM_NAME
+        value: "FUNDAMICS TUTORIALS"
+      - key: NOTIFICATIONS_ENABLED
+        value: "true"
+      - key: FRONTEND_BASE_URL
+        value: https://fundamicstutorials.in
