@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 from src.config import settings
 from src.services.email_service import mask_email
 from src.core.audit import record_audit_log
@@ -224,11 +224,58 @@ class AuthService:
         from src.services.notification_service import notification_service
         from src.schemas.auth import MessageResponse
 
-        # Check existing email
-        stmt = select(User).where(User.email == req.email.lower().strip())
+        clean_email = req.email.lower().strip()
+
+        # Check existing user
+        stmt = select(User).where(func.lower(func.trim(User.email)) == clean_email)
         res = await db.execute(stmt)
-        if res.scalar_one_or_none():
-            raise ConflictError("A user with this email address already exists")
+        existing_user = res.scalar_one_or_none()
+        if existing_user:
+            if existing_user.status == UserStatus.PENDING_VERIFICATION or existing_user.email_verified_at is None:
+                # Existing unverified registration: re-issue verification token and resend email
+                raw_token = secrets.token_urlsafe(32)
+                hashed_token = hash_token(raw_token)
+                v_token = VerificationToken(
+                    user_id=existing_user.id,
+                    token_hash=hashed_token,
+                    purpose="EMAIL_VERIFICATION",
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
+                )
+                db.add(v_token)
+                try:
+                    await db.flush()
+                except IntegrityError:
+                    await db.rollback()
+                    raise ConflictError("An account with this email address already exists. Please log in or reset your password.")
+
+                await record_audit_log(
+                    db=db,
+                    action="STUDENT_REGISTRATION_RESENT_VERIFICATION",
+                    resource_type="user",
+                    resource_id=str(existing_user.id),
+                    actor_id=existing_user.id,
+                    after_json={"email": existing_user.email},
+                    request_id=request_id,
+                )
+
+                try:
+                    await notification_service.send_verification_email(
+                        db=db,
+                        to_email=existing_user.email,
+                        user_name=existing_user.name,
+                        token=raw_token,
+                    )
+                except Exception as exc:
+                    logger.error("Error sending verification email on unverified student re-registration: %s", exc)
+
+                await db.commit()
+
+                return MessageResponse(
+                    success=True,
+                    message="An unverified registration already exists for this email address. A fresh verification email has been dispatched. Please check your inbox.",
+                )
+            else:
+                raise ConflictError("An account with this email address already exists. Please log in or reset your password.")
 
         # Verify class and batch
         class_obj = await db.get(Class, req.class_id)
@@ -247,64 +294,78 @@ class AuthService:
         pwd_hash = hash_password(req.password)
         new_user = User(
             name=req.name.strip(),
-            email=req.email.lower().strip(),
+            email=clean_email,
             phone=req.phone.strip() if req.phone else None,
             password_hash=pwd_hash,
             role=UserRole.STUDENT,
             status=UserStatus.PENDING_VERIFICATION,
         )
-        db.add(new_user)
-        await db.flush()
 
-        new_student = Student(
-            user_id=new_user.id,
-            student_code=student_code,
-            class_id=req.class_id,
-            batch_id=req.batch_id,
-            admission_date=date.today(),
-            status="PENDING",
-        )
-        db.add(new_student)
-        await db.flush()
+        try:
+            db.add(new_user)
+            await db.flush()
 
-        new_enrollment = Enrollment(
-            student_id=new_student.id,
-            class_id=req.class_id,
-            batch_id=req.batch_id,
-            start_date=date.today(),
-            status="PENDING",
-        )
-        db.add(new_enrollment)
+            new_student = Student(
+                user_id=new_user.id,
+                student_code=student_code,
+                class_id=req.class_id,
+                batch_id=req.batch_id,
+                admission_date=date.today(),
+                status="PENDING",
+            )
+            db.add(new_student)
+            await db.flush()
 
-        # Generate email verification token
-        raw_token = secrets.token_urlsafe(32)
-        hashed_token = hash_token(raw_token)
-        v_token = VerificationToken(
-            user_id=new_user.id,
-            token_hash=hashed_token,
-            purpose="EMAIL_VERIFICATION",
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
-        )
-        db.add(v_token)
-        await db.flush()
+            new_enrollment = Enrollment(
+                student_id=new_student.id,
+                class_id=req.class_id,
+                batch_id=req.batch_id,
+                start_date=date.today(),
+                status="PENDING",
+            )
+            db.add(new_enrollment)
 
-        await record_audit_log(
-            db=db,
-            action="STUDENT_SELF_REGISTERED",
-            resource_type="user",
-            resource_id=str(new_user.id),
-            actor_id=new_user.id,
-            after_json={"email": new_user.email, "student_code": student_code},
-            request_id=request_id,
-        )
+            # Generate email verification token
+            raw_token = secrets.token_urlsafe(32)
+            hashed_token = hash_token(raw_token)
+            v_token = VerificationToken(
+                user_id=new_user.id,
+                token_hash=hashed_token,
+                purpose="EMAIL_VERIFICATION",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
+            )
+            db.add(v_token)
+            await db.flush()
 
-        await notification_service.send_verification_email(
-            db=db,
-            to_email=new_user.email,
-            user_name=new_user.name,
-            token=raw_token,
-        )
-        await db.commit()
+            await record_audit_log(
+                db=db,
+                action="STUDENT_SELF_REGISTERED",
+                resource_type="user",
+                resource_id=str(new_user.id),
+                actor_id=new_user.id,
+                after_json={"email": new_user.email, "student_code": student_code},
+                request_id=request_id,
+            )
+
+            try:
+                await notification_service.send_verification_email(
+                    db=db,
+                    to_email=new_user.email,
+                    user_name=new_user.name,
+                    token=raw_token,
+                )
+            except Exception as exc:
+                logger.error("Error dispatching verification email for new student %s: %s", new_user.id, exc)
+
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            logger.warning("Integrity error during student self-registration for %s: %s", mask_email(clean_email), exc)
+            raise ConflictError("An account with this email address or identifier already exists. Please log in or reset your password.")
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            logger.error("Database error during student self-registration: %s", exc)
+            raise ServiceUnavailableError("Registration service is temporarily unavailable. Please try again later.")
 
         return MessageResponse(
             success=True,
@@ -444,7 +505,7 @@ class AuthService:
         email: str,
         request_id: Optional[str] = None,
     ) -> "MessageResponse":
-        from src.models.auth_session import PasswordResetToken
+        from src.models.auth_session import PasswordResetToken, VerificationToken
         from src.services.notification_service import notification_service
         from src.schemas.auth import MessageResponse
 
@@ -453,7 +514,7 @@ class AuthService:
         res = await db.execute(stmt)
         user = res.scalar_one_or_none()
 
-        if user and user.status == UserStatus.ACTIVE:
+        if user and user.status in (UserStatus.ACTIVE, UserStatus.PENDING_APPROVAL):
             raw_token = secrets.token_urlsafe(32)
             hashed = hash_token(raw_token)
             reset_record = PasswordResetToken(
@@ -463,7 +524,15 @@ class AuthService:
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
             )
             db.add(reset_record)
-            await db.flush()
+            try:
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                logger.warning("Integrity error persisting password reset token for %s", mask_email(clean_email))
+                return MessageResponse(
+                    success=True,
+                    message="If your account is registered and active, password reset instructions have been dispatched.",
+                )
 
             try:
                 await notification_service.send_password_reset(
@@ -489,6 +558,51 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+        elif user and user.status == UserStatus.PENDING_VERIFICATION:
+            # Unverified account recovery policy:
+            # Dispatch fresh verification email so user can verify address and activate account
+            raw_token = secrets.token_urlsafe(32)
+            hashed = hash_token(raw_token)
+            v_token = VerificationToken(
+                user_id=user.id,
+                token_hash=hashed,
+                purpose="EMAIL_VERIFICATION",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
+            )
+            db.add(v_token)
+            try:
+                await db.flush()
+            except IntegrityError:
+                await db.rollback()
+                logger.warning("Integrity error persisting recovery verification token for %s", mask_email(clean_email))
+                return MessageResponse(
+                    success=True,
+                    message="If your account is registered and active, password reset instructions have been dispatched.",
+                )
+
+            try:
+                await notification_service.send_verification_email(
+                    db=db,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Unexpected error during unverified account recovery email dispatch for user %s: %s",
+                    user.id,
+                    exc,
+                )
+
+            await record_audit_log(
+                db=db,
+                action="PASSWORD_RESET_UNVERIFIED_RECOVERY",
+                resource_type="user",
+                resource_id=str(user.id),
+                actor_id=user.id,
+                request_id=request_id,
+            )
+            await db.commit()
         else:
             if not user:
                 logger.info(
@@ -497,7 +611,7 @@ class AuthService:
                 )
             else:
                 logger.info(
-                    "Password reset requested for user %s with non-active status '%s' - returning generic success (enumeration defense)",
+                    "Password reset requested for user %s with non-eligible status '%s' - returning generic success (enumeration defense)",
                     user.id,
                     user.status,
                 )
@@ -529,7 +643,7 @@ class AuthService:
         res = await db.execute(stmt)
         record = res.scalar_one_or_none()
 
-        if not record:
+        if not record or record.purpose != "PASSWORD_RESET":
             raise ValidationError("Invalid or unknown password reset token")
         if record.used_at is not None:
             raise ValidationError("Password reset token has already been used")
@@ -540,6 +654,9 @@ class AuthService:
         user = await db.get(User, record.user_id)
         if not user:
             raise NotFoundError("User account not found")
+
+        if user.status in (UserStatus.SUSPENDED, UserStatus.REJECTED, UserStatus.INACTIVE):
+            raise ValidationError("Account is not eligible for password reset")
 
         record.used_at = now
         user.password_hash = hash_password(new_password)

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, AliasChoices
 from src.models.user import UserRole, UserStatus
 
 
@@ -29,23 +29,27 @@ class RefreshTokenRequest(BaseModel):
 
 
 class ChangePasswordRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    old_password: str = Field(min_length=6, max_length=128)
-    new_password: str = Field(min_length=8, max_length=128)
+    old_password: str = Field(validation_alias=AliasChoices("old_password", "oldPassword", "current_password"), min_length=6, max_length=128)
+    new_password: str = Field(validation_alias=AliasChoices("new_password", "newPassword", "password"), min_length=8, max_length=128)
 
 
 class ForgotPasswordRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    email: EmailStr
+    email: EmailStr = Field(validation_alias=AliasChoices("email", "username", "user_email"))
 
 
 class ResetPasswordRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     token: str = Field(min_length=1, max_length=255)
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(
+        validation_alias=AliasChoices("new_password", "newPassword", "password"),
+        min_length=8,
+        max_length=128,
+    )
 
     @classmethod
     @field_validator("new_password")
@@ -62,19 +66,19 @@ class ResetPasswordRequest(BaseModel):
 
 
 class EmailVerificationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    email: EmailStr
+    email: EmailStr = Field(validation_alias=AliasChoices("email", "username", "user_email"))
 
 
 class EmailVerificationConfirmRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     token: str = Field(min_length=1, max_length=255)
 
 
 class StudentSelfRegisterRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     name: str = Field(min_length=1, max_length=150)
     email: EmailStr
@@ -85,16 +89,16 @@ class StudentSelfRegisterRequest(BaseModel):
 
 
 class VerifyEmailRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     token: str = Field(min_length=1)
     email: Optional[EmailStr] = None
 
 
 class ResendVerificationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
-    email: EmailStr
+    email: EmailStr = Field(validation_alias=AliasChoices("email", "username", "user_email"))
 
 
 class UpdateProfileRequest(BaseModel):

@@ -335,11 +335,16 @@ async def test_password_reset_nonexistent_email_early_exit(in_memory_db: AsyncSe
 
 
 @pytest.mark.asyncio
-async def test_password_reset_pending_approval_user_early_exit(in_memory_db: AsyncSession):
+async def test_password_reset_account_status_policies(in_memory_db: AsyncSession):
     """
-    If user exists but is PENDING_APPROVAL (not ACTIVE), do not issue token or send email,
-    while returning identical public response to prevent account state enumeration.
+    Verify password reset policy across account statuses:
+    1. PENDING_APPROVAL (verified email) -> issues password reset token and dispatches reset instructions.
+    2. PENDING_VERIFICATION (unverified email) -> issues verification token and dispatches verification email.
+    3. SUSPENDED/REJECTED -> returns generic response, issues no tokens or emails.
+    All return identical public response to prevent account state enumeration.
     """
+    from src.models.auth_session import VerificationToken
+
     pending_user = User(
         id=uuid.uuid4(),
         name="Pending Approval User",
@@ -348,25 +353,58 @@ async def test_password_reset_pending_approval_user_early_exit(in_memory_db: Asy
         role=UserRole.STUDENT,
         status=UserStatus.PENDING_APPROVAL,
     )
-    in_memory_db.add(pending_user)
+    unverified_user = User(
+        id=uuid.uuid4(),
+        name="Unverified User",
+        email="unverified_pass_reset@fundamics.in",
+        password_hash="fakehash",
+        role=UserRole.STUDENT,
+        status=UserStatus.PENDING_VERIFICATION,
+    )
+    suspended_user = User(
+        id=uuid.uuid4(),
+        name="Suspended User",
+        email="suspended_pass_reset@fundamics.in",
+        password_hash="fakehash",
+        role=UserRole.STUDENT,
+        status=UserStatus.SUSPENDED,
+    )
+    in_memory_db.add_all([pending_user, unverified_user, suspended_user])
     await in_memory_db.commit()
 
-    with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
-        resp = await auth_service.request_password_reset(
-            db=in_memory_db,
-            email="pending_pass_reset@fundamics.in",
-        )
+    with patch("src.services.email_service.email_service.send_password_reset_email", new_callable=AsyncMock) as mock_reset, \
+         patch("src.services.email_service.email_service.send_verification_email", new_callable=AsyncMock) as mock_verify:
 
-        assert resp.success is True
-        assert "password reset instructions have been dispatched" in resp.message.lower()
+        mock_reset.return_value = {"success": True, "message_id": "test-reset-id"}
+        mock_verify.return_value = {"success": True, "message_id": "test-verify-id"}
 
-        # No SMTP dispatch attempted
-        assert mock_send.await_count == 0
+        # 1. PENDING_APPROVAL: issues password reset token
+        resp1 = await auth_service.request_password_reset(db=in_memory_db, email="pending_pass_reset@fundamics.in")
+        assert resp1.success is True
+        assert mock_reset.await_count == 1
+        stmt1 = select(PasswordResetToken).where(PasswordResetToken.user_id == pending_user.id)
+        p_token = (await in_memory_db.execute(stmt1)).scalar_one_or_none()
+        assert p_token is not None
+        assert p_token.purpose == "PASSWORD_RESET"
 
-        # No token created for inactive user
-        stmt = select(PasswordResetToken).where(PasswordResetToken.user_id == pending_user.id)
-        token = (await in_memory_db.execute(stmt)).scalar_one_or_none()
-        assert token is None
+        # 2. PENDING_VERIFICATION: issues verification recovery token
+        resp2 = await auth_service.request_password_reset(db=in_memory_db, email="unverified_pass_reset@fundamics.in")
+        assert resp2.success is True
+        assert mock_verify.await_count == 1
+        stmt2 = select(VerificationToken).where(VerificationToken.user_id == unverified_user.id)
+        v_token = (await in_memory_db.execute(stmt2)).scalar_one_or_none()
+        assert v_token is not None
+        assert v_token.purpose == "EMAIL_VERIFICATION"
+
+        # 3. SUSPENDED: no reset or verify dispatched, generic response returned
+        mock_reset.reset_mock()
+        mock_verify.reset_mock()
+        resp3 = await auth_service.request_password_reset(db=in_memory_db, email="suspended_pass_reset@fundamics.in")
+        assert resp3.success is True
+        assert mock_reset.await_count == 0
+        assert mock_verify.await_count == 0
+        stmt3 = select(PasswordResetToken).where(PasswordResetToken.user_id == suspended_user.id)
+        assert (await in_memory_db.execute(stmt3)).scalar_one_or_none() is None
 
 
 @pytest.mark.asyncio

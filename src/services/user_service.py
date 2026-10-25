@@ -1,11 +1,12 @@
 import secrets
 import uuid
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.core.audit import record_audit_log
-from src.core.exceptions import ConflictError, NotFoundError, ValidationError
+from src.core.exceptions import ConflictError, NotFoundError, ValidationError, ServiceUnavailableError
 from src.core.security import hash_password
 from src.models.academic import Class, Batch, Enrollment
 from src.models.user import User, Student, Teacher, UserRole, UserStatus
@@ -32,8 +33,9 @@ class UserService:
         actor_id: uuid.UUID,
         request_id: Optional[str] = None,
     ) -> StudentResponse:
+        clean_email = req.email.lower().strip()
         # Check email uniqueness
-        existing_email = await db.execute(select(User).where(User.email == req.email.lower().strip()))
+        existing_email = await db.execute(select(User).where(func.lower(func.trim(User.email)) == clean_email))
         if existing_email.scalar_one_or_none():
             raise ConflictError("A user with this email address already exists")
 
@@ -58,51 +60,59 @@ class UserService:
         # Atomic User + Student + Initial Enrollment creation
         new_user = User(
             name=req.name.strip(),
-            email=req.email.lower().strip(),
+            email=clean_email,
             phone=req.phone.strip() if req.phone else None,
             password_hash=pwd_hash,
             role=UserRole.STUDENT,
             status=UserStatus.ACTIVE if req.password else UserStatus.PENDING_VERIFICATION,
         )
-        db.add(new_user)
-        await db.flush()
 
-        new_student = Student(
-            user_id=new_user.id,
-            student_code=req.student_code.strip(),
-            class_id=req.class_id,
-            batch_id=req.batch_id,
-            admission_date=req.admission_date,
-            status="ACTIVE",
-        )
-        db.add(new_student)
-        await db.flush()
+        try:
+            db.add(new_user)
+            await db.flush()
 
-        new_enrollment = Enrollment(
-            student_id=new_student.id,
-            class_id=req.class_id,
-            batch_id=req.batch_id,
-            start_date=req.admission_date,
-            status="ACTIVE",
-        )
-        db.add(new_enrollment)
+            new_student = Student(
+                user_id=new_user.id,
+                student_code=req.student_code.strip(),
+                class_id=req.class_id,
+                batch_id=req.batch_id,
+                admission_date=req.admission_date,
+                status="ACTIVE",
+            )
+            db.add(new_student)
+            await db.flush()
 
-        await record_audit_log(
-            db=db,
-            action="STUDENT_CREATED",
-            resource_type="student",
-            resource_id=str(new_student.id),
-            actor_id=actor_id,
-            after_json={
-                "student_code": new_student.student_code,
-                "class_id": str(req.class_id),
-                "batch_id": str(req.batch_id),
-                "admission_date": str(req.admission_date),
-            },
-            request_id=request_id,
-        )
+            new_enrollment = Enrollment(
+                student_id=new_student.id,
+                class_id=req.class_id,
+                batch_id=req.batch_id,
+                start_date=req.admission_date,
+                status="ACTIVE",
+            )
+            db.add(new_enrollment)
 
-        await db.commit()
+            await record_audit_log(
+                db=db,
+                action="STUDENT_CREATED",
+                resource_type="student",
+                resource_id=str(new_student.id),
+                actor_id=actor_id,
+                after_json={
+                    "student_code": new_student.student_code,
+                    "class_id": str(req.class_id),
+                    "batch_id": str(req.batch_id),
+                    "admission_date": str(req.admission_date),
+                },
+                request_id=request_id,
+            )
+
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise ConflictError("A user or student with this email address or code already exists")
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            raise ServiceUnavailableError("Failed to create student. Please try again later.")
 
         return StudentResponse(
             id=new_student.id,
@@ -171,8 +181,9 @@ class UserService:
         actor_id: uuid.UUID,
         request_id: Optional[str] = None,
     ) -> TeacherResponse:
+        clean_email = req.email.lower().strip()
         # Check email uniqueness
-        existing_email = await db.execute(select(User).where(User.email == req.email.lower().strip()))
+        existing_email = await db.execute(select(User).where(func.lower(func.trim(User.email)) == clean_email))
         if existing_email.scalar_one_or_none():
             raise ConflictError("A user with this email address already exists")
 
@@ -194,37 +205,45 @@ class UserService:
 
         new_user = User(
             name=req.name.strip(),
-            email=req.email.lower().strip(),
+            email=clean_email,
             phone=req.phone.strip() if req.phone else None,
             password_hash=pwd_hash,
             role=UserRole.TEACHER,
             status=UserStatus.ACTIVE if req.password else UserStatus.PENDING_VERIFICATION,
         )
-        db.add(new_user)
-        await db.flush()
 
-        new_teacher = Teacher(
-            user_id=new_user.id,
-            teacher_code=req.teacher_code.strip(),
-            biometric_employee_id=req.biometric_employee_id.strip() if req.biometric_employee_id else None,
-            status="ACTIVE",
-        )
-        db.add(new_teacher)
+        try:
+            db.add(new_user)
+            await db.flush()
 
-        await record_audit_log(
-            db=db,
-            action="TEACHER_CREATED",
-            resource_type="teacher",
-            resource_id=str(new_teacher.id),
-            actor_id=actor_id,
-            after_json={
-                "teacher_code": new_teacher.teacher_code,
-                "biometric_employee_id": new_teacher.biometric_employee_id,
-            },
-            request_id=request_id,
-        )
+            new_teacher = Teacher(
+                user_id=new_user.id,
+                teacher_code=req.teacher_code.strip(),
+                biometric_employee_id=req.biometric_employee_id.strip() if req.biometric_employee_id else None,
+                status="ACTIVE",
+            )
+            db.add(new_teacher)
 
-        await db.commit()
+            await record_audit_log(
+                db=db,
+                action="TEACHER_CREATED",
+                resource_type="teacher",
+                resource_id=str(new_teacher.id),
+                actor_id=actor_id,
+                after_json={
+                    "teacher_code": new_teacher.teacher_code,
+                    "biometric_employee_id": new_teacher.biometric_employee_id,
+                },
+                request_id=request_id,
+            )
+
+            await db.commit()
+        except IntegrityError as exc:
+            await db.rollback()
+            raise ConflictError("A user or teacher with this email address or code already exists")
+        except (SQLAlchemyError, Exception) as exc:
+            await db.rollback()
+            raise ServiceUnavailableError("Failed to create teacher. Please try again later.")
 
         return TeacherResponse(
             id=new_teacher.id,
