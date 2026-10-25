@@ -33,6 +33,17 @@ app.add_exception_handler(AppException, app_exception_handler)
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     error_message = str(exc) if settings.DEBUG else "An unexpected server error occurred"
+    
+    headers = {}
+    origin = request.headers.get("origin")
+    if origin:
+        allowed = settings.CORS_ORIGINS if isinstance(settings.CORS_ORIGINS, list) else [settings.CORS_ORIGINS]
+        if origin in allowed or "*" in allowed:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Access-Control-Allow-Credentials"] = "true"
+            headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            headers["Access-Control-Allow-Headers"] = "*"
+
     return JSONResponse(
         status_code=500,
         content={
@@ -43,6 +54,7 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
             },
             "request_id": request_id,
         },
+        headers=headers,
     )
 
 # Custom Request Context Middleware

@@ -26,4 +26,4 @@ services:
       - key: TIMEZONE
         value: Asia/Kolkata
       - key: CORS_ORIGINS
-        value: "http://localhost:3000,http://localhost:5173,http://localhost:8081"
+        value: "http://localhost:3000,http://localhost:5173,http://localhost:8081,https://fundamicstutorials.in,https://www.fundamicstutorials.in"
