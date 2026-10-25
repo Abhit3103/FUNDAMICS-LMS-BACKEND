@@ -41,7 +41,21 @@ class Settings(BaseSettings):
     NOTIFICATIONS_ENABLED: bool = True
     ERP_API_KEY: str = "test_erp_key"
 
-    # Brevo (Sendinblue) Transactional Email
+    # Hostinger / Standard SMTP Email Configuration
+    SMTP_HOST: str = "smtp.hostinger.com"
+    SMTP_PORT: int = 465
+    SMTP_USE_TLS: bool = True
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    MAIL_FROM: str = "noreply@fundamics.com"
+    MAIL_FROM_NAME: str = "FUNDAMICS LMS"
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+
+    # Token Expiration Settings
+    EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS: int = 24
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 60
+
+    # Brevo (Sendinblue) Transactional Email (Optional legacy fallback)
     BREVO_API_KEY: Optional[str] = None
     BREVO_SENDER_EMAIL: str = "noreply@fundamics.com"
     BREVO_SENDER_NAME: str = "FUNDAMICS LMS"

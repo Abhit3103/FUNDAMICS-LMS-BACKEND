@@ -203,24 +203,11 @@ class NotificationService:
         if not settings.NOTIFICATIONS_ENABLED:
             return False
 
-        subject = "FUNDAMICS LMS — Verify Your Email Address"
-        html = f"""
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <h2>Welcome to FUNDAMICS LMS, {user_name}!</h2>
-            <p>Thank you for registering. Please use the following token or link to verify your email address:</p>
-            <p style="font-size: 20px; font-weight: bold; background: #f4f4f4; padding: 10px; display: inline-block; letter-spacing: 2px;">
-                {token}
-            </p>
-            <p>This verification token is valid for 24 hours.</p>
-            <p>If you did not create this account, please ignore this email.</p>
-        </div>
-        """
-        result = await self.email_adapter.send_email(
+        from src.services.email_service import email_service
+        result = await email_service.send_verification_email(
             to_email=to_email,
-            to_name=user_name,
-            subject=subject,
-            html_content=html,
-            text_content=f"Welcome {user_name}! Your FUNDAMICS LMS verification token is: {token}",
+            user_name=user_name,
+            token=token,
         )
         status_str = "DELIVERED" if result.get("success") else "FAILED"
         await self.log_record(
@@ -245,24 +232,11 @@ class NotificationService:
         if not settings.NOTIFICATIONS_ENABLED:
             return False
 
-        subject = "FUNDAMICS LMS — Password Reset Request"
-        html = f"""
-        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-            <h2>Password Reset Request</h2>
-            <p>Hello {user_name},</p>
-            <p>We received a request to reset your password. Use the token below to set a new password:</p>
-            <p style="font-size: 20px; font-weight: bold; background: #fef3c7; color: #92400e; padding: 10px; display: inline-block;">
-                {token}
-            </p>
-            <p>This token will expire in 1 hour. If you did not request this, please secure your account immediately.</p>
-        </div>
-        """
-        email_res = await self.email_adapter.send_email(
+        from src.services.email_service import email_service
+        email_res = await email_service.send_password_reset_email(
             to_email=to_email,
-            to_name=user_name,
-            subject=subject,
-            html_content=html,
-            text_content=f"Hello {user_name}, your password reset token is: {token}",
+            user_name=user_name,
+            token=token,
         )
         await self.log_record(
             db=db,
@@ -326,9 +300,10 @@ class NotificationService:
             """
             wa_text = f"FUNDAMICS LMS: Your registration could not be approved. Reason: {reason_text}"
 
-        email_res = await self.email_adapter.send_email(
+        # Use Hostinger SMTP (same as verification/reset emails) instead of Brevo adapter
+        from src.services.email_service import email_service
+        email_res = await email_service.send_email(
             to_email=to_email,
-            to_name=user_name,
             subject=subject,
             html_content=html,
             text_content=wa_text,

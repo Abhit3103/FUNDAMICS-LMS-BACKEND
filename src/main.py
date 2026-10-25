@@ -61,6 +61,10 @@ app.add_middleware(
 # Include API v1 Router
 app.include_router(v1_router, prefix=settings.API_V1_PREFIX)
 
+# Also expose /auth directly at root level for seamless routing
+from src.api.v1.auth import router as auth_router
+app.include_router(auth_router)
+
 
 @app.get("/", tags=["Root"])
 async def root():

@@ -275,13 +275,14 @@ class AuthService:
         )
         db.add(new_enrollment)
 
-        # Generate email verification token (24-hour expiry)
+        # Generate email verification token
         raw_token = secrets.token_urlsafe(32)
         hashed_token = hash_token(raw_token)
         v_token = VerificationToken(
             user_id=new_user.id,
             token_hash=hashed_token,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            purpose="EMAIL_VERIFICATION",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
         )
         db.add(v_token)
         await db.flush()
@@ -310,6 +311,63 @@ class AuthService:
         )
 
     @staticmethod
+    async def request_email_verification(
+        db: AsyncSession,
+        email: str,
+        request_id: Optional[str] = None,
+    ) -> "MessageResponse":
+        from src.models.auth_session import VerificationToken
+        from src.services.notification_service import notification_service
+        from src.schemas.auth import MessageResponse
+
+        clean_email = email.lower().strip()
+        stmt = select(User).where(User.email == clean_email)
+        res = await db.execute(stmt)
+        user = res.scalar_one_or_none()
+
+        # Prevent email enumeration and resend only if user exists and is not verified
+        if user and user.email_verified_at is None:
+            raw_token = secrets.token_urlsafe(32)
+            hashed_token = hash_token(raw_token)
+            v_token = VerificationToken(
+                user_id=user.id,
+                token_hash=hashed_token,
+                purpose="EMAIL_VERIFICATION",
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=settings.EMAIL_VERIFICATION_TOKEN_EXPIRE_HOURS),
+            )
+            db.add(v_token)
+            await db.flush()
+            await notification_service.send_verification_email(
+                db=db,
+                to_email=user.email,
+                user_name=user.name,
+                token=raw_token,
+            )
+            await record_audit_log(
+                db=db,
+                action="EMAIL_VERIFICATION_REQUESTED",
+                resource_type="user",
+                resource_id=str(user.id),
+                actor_id=user.id,
+                request_id=request_id,
+            )
+            await db.commit()
+
+        return MessageResponse(
+            success=True,
+            message="If an account exists with this email address, a verification link has been sent.",
+        )
+
+    @staticmethod
+    async def resend_verification(
+        db: AsyncSession,
+        email: str,
+        request_id: Optional[str] = None,
+    ) -> "MessageResponse":
+        """Backward-compatible alias for request_email_verification."""
+        return await AuthService.request_email_verification(db=db, email=email, request_id=request_id)
+
+    @staticmethod
     async def verify_email(
         db: AsyncSession,
         token: str,
@@ -322,16 +380,22 @@ class AuthService:
         hashed_token = hash_token(token.strip())
         now = datetime.now(timezone.utc)
 
-        stmt = select(VerificationToken).where(
-            VerificationToken.token_hash == hashed_token,
-            VerificationToken.used_at.is_(None),
-            VerificationToken.expires_at > now,
+        # Concurrency safety: Row-level lock ensures single consumption under concurrent requests
+        stmt = (
+            select(VerificationToken)
+            .where(VerificationToken.token_hash == hashed_token)
+            .with_for_update()
         )
         res = await db.execute(stmt)
         v_token = res.scalar_one_or_none()
 
         if not v_token:
-            raise ValidationError("Invalid, already used, or expired verification token")
+            raise ValidationError("Invalid or unknown verification token")
+        if v_token.used_at is not None:
+            raise ValidationError("Verification token has already been used")
+        token_expires_at = v_token.expires_at if v_token.expires_at.tzinfo else v_token.expires_at.replace(tzinfo=timezone.utc)
+        if token_expires_at <= now:
+            raise ValidationError("Verification token has expired")
 
         user = await db.get(User, v_token.user_id)
         if not user:
@@ -358,43 +422,6 @@ class AuthService:
         )
 
     @staticmethod
-    async def resend_verification(
-        db: AsyncSession,
-        email: str,
-    ) -> "MessageResponse":
-        from src.models.auth_session import VerificationToken
-        from src.services.notification_service import notification_service
-        from src.schemas.auth import MessageResponse
-
-        stmt = select(User).where(User.email == email.lower().strip())
-        res = await db.execute(stmt)
-        user = res.scalar_one_or_none()
-
-        if user and not user.email_verified_at:
-            # Generate new token
-            raw_token = secrets.token_urlsafe(32)
-            hashed_token = hash_token(raw_token)
-            v_token = VerificationToken(
-                user_id=user.id,
-                token_hash=hashed_token,
-                expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            )
-            db.add(v_token)
-            await db.flush()
-            await notification_service.send_verification_email(
-                db=db,
-                to_email=user.email,
-                user_name=user.name,
-                token=raw_token,
-            )
-            await db.commit()
-
-        return MessageResponse(
-            success=True,
-            message="If an account exists with this email address, a verification link has been sent.",
-        )
-
-    @staticmethod
     async def request_password_reset(
         db: AsyncSession,
         email: str,
@@ -404,7 +431,8 @@ class AuthService:
         from src.services.notification_service import notification_service
         from src.schemas.auth import MessageResponse
 
-        stmt = select(User).where(User.email == email.lower().strip())
+        clean_email = email.lower().strip()
+        stmt = select(User).where(User.email == clean_email)
         res = await db.execute(stmt)
         user = res.scalar_one_or_none()
 
@@ -414,7 +442,8 @@ class AuthService:
             reset_record = PasswordResetToken(
                 user_id=user.id,
                 token_hash=hashed,
-                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                purpose="PASSWORD_RESET",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
             )
             db.add(reset_record)
             await db.flush()
@@ -453,16 +482,22 @@ class AuthService:
         hashed_token = hash_token(token.strip())
         now = datetime.now(timezone.utc)
 
-        stmt = select(PasswordResetToken).where(
-            PasswordResetToken.token_hash == hashed_token,
-            PasswordResetToken.used_at.is_(None),
-            PasswordResetToken.expires_at > now,
+        # Concurrency safety: Row-level lock ensures single consumption under concurrent requests
+        stmt = (
+            select(PasswordResetToken)
+            .where(PasswordResetToken.token_hash == hashed_token)
+            .with_for_update()
         )
         res = await db.execute(stmt)
         record = res.scalar_one_or_none()
 
         if not record:
-            raise ValidationError("Invalid or expired password reset token")
+            raise ValidationError("Invalid or unknown password reset token")
+        if record.used_at is not None:
+            raise ValidationError("Password reset token has already been used")
+        token_expires_at = record.expires_at if record.expires_at.tzinfo else record.expires_at.replace(tzinfo=timezone.utc)
+        if token_expires_at <= now:
+            raise ValidationError("Password reset token has expired")
 
         user = await db.get(User, record.user_id)
         if not user:
@@ -471,7 +506,7 @@ class AuthService:
         record.used_at = now
         user.password_hash = hash_password(new_password)
 
-        # Invalidate active login sessions
+        # Invalidate active login sessions to enforce session revocation
         sess_stmt = select(AuthSession).where(
             AuthSession.user_id == user.id,
             AuthSession.revoked_at.is_(None),

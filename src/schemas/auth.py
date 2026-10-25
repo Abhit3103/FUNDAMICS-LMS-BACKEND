@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field, ConfigDict
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
 from src.models.user import UserRole, UserStatus
 
 
@@ -44,8 +44,33 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    token: str
+    token: str = Field(min_length=1, max_length=255)
     new_password: str = Field(min_length=8, max_length=128)
+
+    @classmethod
+    @field_validator("new_password")
+    def validate_password_strength(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.islower() for c in v):
+            raise ValueError("Password must contain at least one lowercase letter")
+        if not any(c.isdigit() or not c.isalnum() for c in v):
+            raise ValueError("Password must contain at least one digit or special character")
+        return v
+
+
+class EmailVerificationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+
+
+class EmailVerificationConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=255)
 
 
 class StudentSelfRegisterRequest(BaseModel):

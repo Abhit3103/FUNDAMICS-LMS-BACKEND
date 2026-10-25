@@ -35,6 +35,7 @@ class VerificationToken(TimeStampedUUIDModel):
         index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(50), default="EMAIL_VERIFICATION", index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -49,5 +50,6 @@ class PasswordResetToken(TimeStampedUUIDModel):
         index=True,
     )
     token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(50), default="PASSWORD_RESET", index=True, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -14,11 +14,20 @@ from src.schemas.auth import (
     ResendVerificationRequest,
     ForgotPasswordRequest,
     ResetPasswordRequest,
+    EmailVerificationRequest,
+    EmailVerificationConfirmRequest,
     ChangePasswordRequest,
     UpdateProfileRequest,
     MessageResponse,
 )
-from src.core.rate_limit import rate_limit_login, login_rate_limiter
+from src.core.rate_limit import (
+    rate_limit_login,
+    login_rate_limiter,
+    rate_limit_email_verification,
+    email_verification_rate_limiter,
+    rate_limit_password_reset,
+    password_reset_rate_limiter,
+)
 from src.services.auth_service import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Profile"])
@@ -63,42 +72,88 @@ async def register_student(
     )
 
 
-@router.post("/verify-email", response_model=MessageResponse, status_code=status.HTTP_200_OK)
-async def verify_email(
-    req: VerifyEmailRequest,
+@router.post(
+    "/email/verification/request",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_email_verification)],
+)
+@router.post(
+    "/resend-verification",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_email_verification)],
+)
+async def request_email_verification(
+    req: EmailVerificationRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Verify student email address using secure token from verification email."""
+    """
+    Generate a cryptographically secure, time-limited token and email a verification link to the user.
+    Generic response prevents user enumeration.
+    """
     request_id = getattr(request.state, "request_id", None)
-    return await auth_service.verify_email(
+    email_verification_rate_limiter.check(f"email:{req.email.lower().strip()}")
+    return await auth_service.request_email_verification(
         db=db,
-        token=req.token,
         email=req.email,
         request_id=request_id,
     )
 
 
-@router.post("/resend-verification", response_model=MessageResponse, status_code=status.HTTP_200_OK)
-async def resend_verification(
-    req: ResendVerificationRequest,
+@router.post(
+    "/email/verification/confirm",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_email_verification)],
+)
+@router.post(
+    "/verify-email",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_email_verification)],
+)
+async def confirm_email_verification(
+    req: EmailVerificationConfirmRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Resend email verification token to unverified registered account."""
-    return await auth_service.resend_verification(
+    """
+    Validate token, reject expired or previously used tokens, and mark user's email as verified.
+    Ensures single consumption via database transaction lock.
+    """
+    request_id = getattr(request.state, "request_id", None)
+    return await auth_service.verify_email(
         db=db,
-        email=req.email,
+        token=req.token,
+        request_id=request_id,
     )
 
 
-@router.post("/forgot-password", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/password/forgot",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_password_reset)],
+)
+@router.post(
+    "/forgot-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_password_reset)],
+)
 async def forgot_password(
     req: ForgotPasswordRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Initiate password reset process via email & WhatsApp."""
+    """
+    Generate a secure, expiring, single-use password-reset token and send user a reset link.
+    Returns generic response to prevent account enumeration.
+    """
     request_id = getattr(request.state, "request_id", None)
+    password_reset_rate_limiter.check(f"email:{req.email.lower().strip()}")
     return await auth_service.request_password_reset(
         db=db,
         email=req.email,
@@ -106,13 +161,27 @@ async def forgot_password(
     )
 
 
-@router.post("/reset-password", response_model=MessageResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/password/reset",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_password_reset)],
+)
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(rate_limit_password_reset)],
+)
 async def reset_password(
     req: ResetPasswordRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Complete password reset using secure token and set new password."""
+    """
+    Validate single-use token, enforce password strength policy, hash new password using bcrypt,
+    save to PostgreSQL, and revoke existing sessions.
+    """
     request_id = getattr(request.state, "request_id", None)
     return await auth_service.reset_password(
         db=db,
