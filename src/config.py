@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True
     SMTP_USERNAME: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
-    MAIL_FROM: str = "noreply@fundamics.com"
-    MAIL_FROM_NAME: str = "FUNDAMICS LMS"
+    MAIL_FROM: str = "info@fundemicstutorials.in"
+    MAIL_FROM_NAME: str = "FUNDAMICS TUTORIALS"
     FRONTEND_BASE_URL: str = "http://localhost:3000"
 
     # Token Expiration Settings
@@ -57,8 +57,8 @@ class Settings(BaseSettings):
 
     # Brevo (Sendinblue) Transactional Email (Optional legacy fallback)
     BREVO_API_KEY: Optional[str] = None
-    BREVO_SENDER_EMAIL: str = "noreply@fundamics.com"
-    BREVO_SENDER_NAME: str = "FUNDAMICS LMS"
+    BREVO_SENDER_EMAIL: str = "info@fundamicstutorials.in"
+    BREVO_SENDER_NAME: str = "FUNDAMICS TUTORIALS"
 
     # WhatsApp Business Cloud API
     WHATSAPP_API_TOKEN: Optional[str] = None
