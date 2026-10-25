@@ -514,7 +514,22 @@ class AuthService:
         res = await db.execute(stmt)
         user = res.scalar_one_or_none()
 
+        logger.info(
+            "[PASSWORD_RESET_USER_LOOKUP_RESULT] req_id=%s email=%s found=%s user_id=%s status=%s",
+            request_id,
+            mask_email(clean_email),
+            bool(user),
+            user.id if user else None,
+            user.status.value if user else None,
+        )
+
         if user and user.status in (UserStatus.ACTIVE, UserStatus.PENDING_APPROVAL):
+            logger.info(
+                "[PASSWORD_RESET_ACCOUNT_ELIGIBILITY] req_id=%s user_id=%s status=%s eligible=True action=SEND_PASSWORD_RESET",
+                request_id,
+                user.id,
+                user.status.value,
+            )
             raw_token = secrets.token_urlsafe(32)
             hashed = hash_token(raw_token)
             reset_record = PasswordResetToken(
@@ -526,26 +541,60 @@ class AuthService:
             db.add(reset_record)
             try:
                 await db.flush()
+                logger.info(
+                    "[PASSWORD_RESET_TOKEN_CREATED] req_id=%s user_id=%s token_id=%s expires_at=%s purpose=PASSWORD_RESET",
+                    request_id,
+                    user.id,
+                    reset_record.id,
+                    reset_record.expires_at.isoformat(),
+                )
             except IntegrityError:
                 await db.rollback()
-                logger.warning("Integrity error persisting password reset token for %s", mask_email(clean_email))
+                logger.warning(
+                    "[PASSWORD_RESET_TOKEN_CREATE_FAILED] req_id=%s user_id=%s recipient=%s reason=integrity_error",
+                    request_id,
+                    user.id,
+                    mask_email(clean_email),
+                )
                 return MessageResponse(
                     success=True,
                     message="If your account is registered and active, password reset instructions have been dispatched.",
                 )
 
+            logger.info(
+                "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL",
+                request_id,
+                user.id,
+                mask_email(user.email),
+            )
             try:
-                await notification_service.send_password_reset(
+                send_ok = await notification_service.send_password_reset(
                     db=db,
                     to_email=user.email,
                     user_name=user.name,
                     token=raw_token,
                     to_phone=user.phone,
                 )
+                if send_ok:
+                    logger.info(
+                        "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                    )
+                else:
+                    logger.warning(
+                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s reason=dispatch_returned_false_or_mocked",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                    )
             except Exception as exc:
                 logger.error(
-                    "Unexpected error during password reset notification dispatch for user %s: %s",
+                    "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s error=%s",
+                    request_id,
                     user.id,
+                    mask_email(user.email),
                     exc,
                 )
 
@@ -561,6 +610,12 @@ class AuthService:
         elif user and user.status == UserStatus.PENDING_VERIFICATION:
             # Unverified account recovery policy:
             # Dispatch fresh verification email so user can verify address and activate account
+            logger.info(
+                "[PASSWORD_RESET_ACCOUNT_ELIGIBILITY] req_id=%s user_id=%s status=%s eligible=False action=SEND_VERIFICATION_RECOVERY",
+                request_id,
+                user.id,
+                user.status.value,
+            )
             raw_token = secrets.token_urlsafe(32)
             hashed = hash_token(raw_token)
             v_token = VerificationToken(
@@ -572,25 +627,59 @@ class AuthService:
             db.add(v_token)
             try:
                 await db.flush()
+                logger.info(
+                    "[PASSWORD_RESET_TOKEN_CREATED] req_id=%s user_id=%s token_id=%s expires_at=%s purpose=EMAIL_VERIFICATION",
+                    request_id,
+                    user.id,
+                    v_token.id,
+                    v_token.expires_at.isoformat(),
+                )
             except IntegrityError:
                 await db.rollback()
-                logger.warning("Integrity error persisting recovery verification token for %s", mask_email(clean_email))
+                logger.warning(
+                    "[PASSWORD_RESET_TOKEN_CREATE_FAILED] req_id=%s user_id=%s recipient=%s reason=recovery_integrity_error",
+                    request_id,
+                    user.id,
+                    mask_email(clean_email),
+                )
                 return MessageResponse(
                     success=True,
                     message="If your account is registered and active, password reset instructions have been dispatched.",
                 )
 
+            logger.info(
+                "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL purpose=EMAIL_VERIFICATION",
+                request_id,
+                user.id,
+                mask_email(user.email),
+            )
             try:
-                await notification_service.send_verification_email(
+                send_ok = await notification_service.send_verification_email(
                     db=db,
                     to_email=user.email,
                     user_name=user.name,
                     token=raw_token,
                 )
+                if send_ok:
+                    logger.info(
+                        "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                    )
+                else:
+                    logger.warning(
+                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION reason=dispatch_returned_false_or_mocked",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                    )
             except Exception as exc:
                 logger.error(
-                    "Unexpected error during unverified account recovery email dispatch for user %s: %s",
+                    "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION error=%s",
+                    request_id,
                     user.id,
+                    mask_email(user.email),
                     exc,
                 )
 
@@ -606,14 +695,16 @@ class AuthService:
         else:
             if not user:
                 logger.info(
-                    "Password reset requested for unregistered email '%s' - returning generic success (enumeration defense)",
+                    "[PASSWORD_RESET_ACCOUNT_ELIGIBILITY] req_id=%s email=%s eligible=False action=ENUMERATION_DEFENSE_NOT_FOUND",
+                    request_id,
                     mask_email(clean_email),
                 )
             else:
                 logger.info(
-                    "Password reset requested for user %s with non-eligible status '%s' - returning generic success (enumeration defense)",
+                    "[PASSWORD_RESET_ACCOUNT_ELIGIBILITY] req_id=%s user_id=%s status=%s eligible=False action=ENUMERATION_DEFENSE_INELIGIBLE_STATUS",
+                    request_id,
                     user.id,
-                    user.status,
+                    user.status.value,
                 )
 
         return MessageResponse(
@@ -679,6 +770,13 @@ class AuthService:
             request_id=request_id,
         )
         await db.commit()
+
+        logger.info(
+            "[PASSWORD_RESET_COMPLETED] req_id=%s user_id=%s sessions_revoked=%d",
+            request_id,
+            user.id,
+            len(active_sessions),
+        )
 
         return MessageResponse(
             success=True,

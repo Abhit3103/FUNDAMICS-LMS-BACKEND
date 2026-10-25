@@ -1,9 +1,11 @@
+import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.dependencies import get_current_user, get_optional_current_user
 from src.database import get_db
 from src.models.user import User
+from src.services.email_service import mask_email
 from src.schemas.auth import (
     LoginRequest,
     RefreshTokenRequest,
@@ -29,6 +31,8 @@ from src.core.rate_limit import (
     password_reset_rate_limiter,
 )
 from src.services.auth_service import auth_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication & Profile"])
 
@@ -153,6 +157,12 @@ async def forgot_password(
     Returns generic response to prevent account enumeration.
     """
     request_id = getattr(request.state, "request_id", None)
+    logger.info(
+        "[PASSWORD_RESET_REQUEST_RECEIVED] req_id=%s email=%s client_ip=%s",
+        request_id,
+        mask_email(req.email),
+        request.client.host if request.client else "unknown",
+    )
     password_reset_rate_limiter.check(f"email:{req.email.lower().strip()}")
     return await auth_service.request_password_reset(
         db=db,
@@ -183,6 +193,11 @@ async def reset_password(
     save to PostgreSQL, and revoke existing sessions.
     """
     request_id = getattr(request.state, "request_id", None)
+    logger.info(
+        "[PASSWORD_RESET_SUBMIT_RECEIVED] req_id=%s client_ip=%s",
+        request_id,
+        request.client.host if request.client else "unknown",
+    )
     return await auth_service.reset_password(
         db=db,
         token=req.token,

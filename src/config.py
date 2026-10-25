@@ -67,6 +67,26 @@ class Settings(BaseSettings):
     PRODUCTION_CORS_ORIGINS: Optional[Union[str, List[str]]] = None
     ADDITIONAL_CORS_ORIGINS: Optional[Union[str, List[str]]] = None
 
+    @field_validator("FRONTEND_BASE_URL", mode="after")
+    @classmethod
+    def resolve_frontend_base_url(cls, v: str, info: ValidationInfo) -> str:
+        cleaned = v.rstrip("/") if v else "http://localhost:3000"
+        if not cleaned.startswith("http://localhost") and not cleaned.startswith("http://127.0.0.1"):
+            return cleaned
+        if info.data:
+            prod_origins = info.data.get("PRODUCTION_CORS_ORIGINS")
+            if prod_origins:
+                candidates = prod_origins.split(",") if isinstance(prod_origins, str) else prod_origins
+                for c in candidates:
+                    origin_str = str(c).strip().rstrip("/")
+                    if origin_str.startswith("https://") or (
+                        origin_str.startswith("http://")
+                        and "localhost" not in origin_str
+                        and "127.0.0.1" not in origin_str
+                    ):
+                        return origin_str
+        return cleaned
+
     @field_validator("CORS_ORIGINS", mode="after")
     @classmethod
     def assemble_cors_origins(cls, v: Union[str, List[str]], info: ValidationInfo) -> List[str]:

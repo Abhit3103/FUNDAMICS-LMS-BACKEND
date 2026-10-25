@@ -1,3 +1,5 @@
+import logging
+import sys
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -6,6 +8,13 @@ from src.config import settings
 from src.core.exceptions import AppException, app_exception_handler
 from src.core.middleware import RequestContextMiddleware
 from src.api.v1.router import v1_router
+
+# Configure root application logging to stdout
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
 
 
 @asynccontextmanager
