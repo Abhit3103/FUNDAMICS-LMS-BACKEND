@@ -1,6 +1,6 @@
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.dependencies import get_current_user, get_optional_current_user
 from src.database import get_db
@@ -65,6 +65,7 @@ async def login(
 async def register_student(
     req: StudentSelfRegisterRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """Student self-registration: Creates account in pending state and sends email verification."""
@@ -73,6 +74,7 @@ async def register_student(
         db=db,
         req=req,
         request_id=request_id,
+        background_tasks=background_tasks,
     )
 
 
@@ -91,6 +93,7 @@ async def register_student(
 async def request_email_verification(
     req: EmailVerificationRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -103,6 +106,7 @@ async def request_email_verification(
         db=db,
         email=req.email,
         request_id=request_id,
+        background_tasks=background_tasks,
     )
 
 
@@ -150,6 +154,7 @@ async def confirm_email_verification(
 async def forgot_password(
     req: ForgotPasswordRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -168,6 +173,7 @@ async def forgot_password(
         db=db,
         email=req.email,
         request_id=request_id,
+        background_tasks=background_tasks,
     )
 
 

@@ -3,6 +3,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from fastapi import BackgroundTasks
 from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,131 @@ logger = logging.getLogger(__name__)
 
 
 class AuthService:
+
+    @staticmethod
+    async def _run_in_background_db(callback):
+        """Execute a callback with an isolated database session for background tasks."""
+        from src.database import AsyncSessionLocal, get_db
+        from src.main import app
+
+        override = app.dependency_overrides.get(get_db)
+        if override:
+            gen = override()
+            bg_db = await anext(gen)
+            try:
+                await callback(bg_db)
+            finally:
+                try:
+                    await anext(gen)
+                except (StopAsyncIteration, Exception):
+                    pass
+        else:
+            async with AsyncSessionLocal() as bg_db:
+                await callback(bg_db)
+
+    @staticmethod
+    async def _dispatch_password_reset_notification(
+        to_email: str,
+        user_name: str,
+        token: str,
+        to_phone: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ):
+        """Background worker for asynchronous password reset notification delivery."""
+        from src.services.notification_service import notification_service
+        logger.info(
+            "[PASSWORD_RESET_BG_STARTING] req_id=%s user_id=%s recipient=%s channel=EMAIL",
+            request_id,
+            user_id,
+            mask_email(to_email),
+        )
+
+        async def _exec(bg_db: AsyncSession):
+            send_ok = await notification_service.send_password_reset(
+                db=bg_db,
+                to_email=to_email,
+                user_name=user_name,
+                token=token,
+                to_phone=to_phone,
+            )
+            await bg_db.commit()
+            if send_ok:
+                logger.info(
+                    "[PASSWORD_RESET_BG_SUCCEEDED] req_id=%s user_id=%s recipient=%s",
+                    request_id,
+                    user_id,
+                    mask_email(to_email),
+                )
+            else:
+                logger.warning(
+                    "[PASSWORD_RESET_BG_FAILED] req_id=%s user_id=%s recipient=%s reason=dispatch_returned_false_or_mocked",
+                    request_id,
+                    user_id,
+                    mask_email(to_email),
+                )
+
+        try:
+            await AuthService._run_in_background_db(_exec)
+        except Exception as exc:
+            logger.error(
+                "[PASSWORD_RESET_BG_ERROR] req_id=%s user_id=%s recipient=%s error=%s",
+                request_id,
+                user_id,
+                mask_email(to_email),
+                exc,
+            )
+
+    @staticmethod
+    async def _dispatch_verification_notification(
+        to_email: str,
+        user_name: str,
+        token: str,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ):
+        """Background worker for asynchronous verification email delivery."""
+        from src.services.notification_service import notification_service
+        logger.info(
+            "[VERIFICATION_EMAIL_BG_STARTING] req_id=%s user_id=%s recipient=%s channel=EMAIL",
+            request_id,
+            user_id,
+            mask_email(to_email),
+        )
+
+        async def _exec(bg_db: AsyncSession):
+            send_ok = await notification_service.send_verification_email(
+                db=bg_db,
+                to_email=to_email,
+                user_name=user_name,
+                token=token,
+            )
+            await bg_db.commit()
+            if send_ok:
+                logger.info(
+                    "[VERIFICATION_EMAIL_BG_SUCCEEDED] req_id=%s user_id=%s recipient=%s",
+                    request_id,
+                    user_id,
+                    mask_email(to_email),
+                )
+            else:
+                logger.warning(
+                    "[VERIFICATION_EMAIL_BG_FAILED] req_id=%s user_id=%s recipient=%s reason=dispatch_returned_false_or_mocked",
+                    request_id,
+                    user_id,
+                    mask_email(to_email),
+                )
+
+        try:
+            await AuthService._run_in_background_db(_exec)
+        except Exception as exc:
+            logger.error(
+                "[VERIFICATION_EMAIL_BG_ERROR] req_id=%s user_id=%s recipient=%s error=%s",
+                request_id,
+                user_id,
+                mask_email(to_email),
+                exc,
+            )
 
     @staticmethod
     async def authenticate_user(
@@ -216,6 +342,7 @@ class AuthService:
         db: AsyncSession,
         req: "StudentSelfRegisterRequest",
         request_id: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> "MessageResponse":
         from datetime import date
         from src.models.user import Student, UserRole
@@ -258,17 +385,28 @@ class AuthService:
                     request_id=request_id,
                 )
 
-                try:
-                    await notification_service.send_verification_email(
-                        db=db,
+                await db.commit()
+
+                if background_tasks:
+                    background_tasks.add_task(
+                        AuthService._dispatch_verification_notification,
                         to_email=existing_user.email,
                         user_name=existing_user.name,
                         token=raw_token,
+                        user_id=str(existing_user.id),
+                        request_id=request_id,
                     )
-                except Exception as exc:
-                    logger.error("Error sending verification email on unverified student re-registration: %s", exc)
-
-                await db.commit()
+                else:
+                    try:
+                        await notification_service.send_verification_email(
+                            db=db,
+                            to_email=existing_user.email,
+                            user_name=existing_user.name,
+                            token=raw_token,
+                        )
+                        await db.commit()
+                    except Exception as exc:
+                        logger.error("Error sending verification email on unverified student re-registration: %s", exc)
 
                 return MessageResponse(
                     success=True,
@@ -347,17 +485,28 @@ class AuthService:
                 request_id=request_id,
             )
 
-            try:
-                await notification_service.send_verification_email(
-                    db=db,
+            await db.commit()
+
+            if background_tasks:
+                background_tasks.add_task(
+                    AuthService._dispatch_verification_notification,
                     to_email=new_user.email,
                     user_name=new_user.name,
                     token=raw_token,
+                    user_id=str(new_user.id),
+                    request_id=request_id,
                 )
-            except Exception as exc:
-                logger.error("Error dispatching verification email for new student %s: %s", new_user.id, exc)
-
-            await db.commit()
+            else:
+                try:
+                    await notification_service.send_verification_email(
+                        db=db,
+                        to_email=new_user.email,
+                        user_name=new_user.name,
+                        token=raw_token,
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    logger.error("Error dispatching verification email for new student %s: %s", new_user.id, exc)
         except IntegrityError as exc:
             await db.rollback()
             logger.warning("Integrity error during student self-registration for %s: %s", mask_email(clean_email), exc)
@@ -377,6 +526,7 @@ class AuthService:
         db: AsyncSession,
         email: str,
         request_id: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> "MessageResponse":
         from src.models.auth_session import VerificationToken
         from src.services.notification_service import notification_service
@@ -399,15 +549,6 @@ class AuthService:
             )
             db.add(v_token)
             await db.flush()
-            try:
-                await notification_service.send_verification_email(
-                    db=db,
-                    to_email=user.email,
-                    user_name=user.name,
-                    token=raw_token,
-                )
-            except Exception as exc:
-                logger.error("Verification email dispatch failed for user %s: %s", user.id, exc)
 
             await record_audit_log(
                 db=db,
@@ -418,6 +559,33 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+
+            if background_tasks:
+                logger.info(
+                    "[EMAIL_VERIFICATION_SCHEDULED_BG] req_id=%s user_id=%s recipient=%s",
+                    request_id,
+                    user.id,
+                    mask_email(user.email),
+                )
+                background_tasks.add_task(
+                    AuthService._dispatch_verification_notification,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                    user_id=str(user.id),
+                    request_id=request_id,
+                )
+            else:
+                try:
+                    await notification_service.send_verification_email(
+                        db=db,
+                        to_email=user.email,
+                        user_name=user.name,
+                        token=raw_token,
+                    )
+                    await db.commit()
+                except Exception as exc:
+                    logger.error("Verification email dispatch failed for user %s: %s", user.id, exc)
         else:
             if not user:
                 logger.info(
@@ -441,9 +609,12 @@ class AuthService:
         db: AsyncSession,
         email: str,
         request_id: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> "MessageResponse":
         """Backward-compatible alias for request_email_verification."""
-        return await AuthService.request_email_verification(db=db, email=email, request_id=request_id)
+        return await AuthService.request_email_verification(
+            db=db, email=email, request_id=request_id, background_tasks=background_tasks
+        )
 
     @staticmethod
     async def verify_email(
@@ -504,6 +675,7 @@ class AuthService:
         db: AsyncSession,
         email: str,
         request_id: Optional[str] = None,
+        background_tasks: Optional[BackgroundTasks] = None,
     ) -> "MessageResponse":
         from src.models.auth_session import PasswordResetToken, VerificationToken
         from src.services.notification_service import notification_service
@@ -561,43 +733,6 @@ class AuthService:
                     message="If your account is registered and active, password reset instructions have been dispatched.",
                 )
 
-            logger.info(
-                "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL",
-                request_id,
-                user.id,
-                mask_email(user.email),
-            )
-            try:
-                send_ok = await notification_service.send_password_reset(
-                    db=db,
-                    to_email=user.email,
-                    user_name=user.name,
-                    token=raw_token,
-                    to_phone=user.phone,
-                )
-                if send_ok:
-                    logger.info(
-                        "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s",
-                        request_id,
-                        user.id,
-                        mask_email(user.email),
-                    )
-                else:
-                    logger.warning(
-                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s reason=dispatch_returned_false_or_mocked",
-                        request_id,
-                        user.id,
-                        mask_email(user.email),
-                    )
-            except Exception as exc:
-                logger.error(
-                    "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s error=%s",
-                    request_id,
-                    user.id,
-                    mask_email(user.email),
-                    exc,
-                )
-
             await record_audit_log(
                 db=db,
                 action="PASSWORD_RESET_REQUESTED",
@@ -607,6 +742,61 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+
+            if background_tasks:
+                logger.info(
+                    "[PASSWORD_RESET_EMAIL_SCHEDULED_BG] req_id=%s user_id=%s recipient=%s channel=EMAIL",
+                    request_id,
+                    user.id,
+                    mask_email(user.email),
+                )
+                background_tasks.add_task(
+                    AuthService._dispatch_password_reset_notification,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                    to_phone=user.phone,
+                    user_id=str(user.id),
+                    request_id=request_id,
+                )
+            else:
+                logger.info(
+                    "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL",
+                    request_id,
+                    user.id,
+                    mask_email(user.email),
+                )
+                try:
+                    send_ok = await notification_service.send_password_reset(
+                        db=db,
+                        to_email=user.email,
+                        user_name=user.name,
+                        token=raw_token,
+                        to_phone=user.phone,
+                    )
+                    await db.commit()
+                    if send_ok:
+                        logger.info(
+                            "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s",
+                            request_id,
+                            user.id,
+                            mask_email(user.email),
+                        )
+                    else:
+                        logger.warning(
+                            "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s reason=dispatch_returned_false_or_mocked",
+                            request_id,
+                            user.id,
+                            mask_email(user.email),
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s error=%s",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                        exc,
+                    )
         elif user and user.status == UserStatus.PENDING_VERIFICATION:
             # Unverified account recovery policy:
             # Dispatch fresh verification email so user can verify address and activate account
@@ -647,42 +837,6 @@ class AuthService:
                     message="If your account is registered and active, password reset instructions have been dispatched.",
                 )
 
-            logger.info(
-                "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL purpose=EMAIL_VERIFICATION",
-                request_id,
-                user.id,
-                mask_email(user.email),
-            )
-            try:
-                send_ok = await notification_service.send_verification_email(
-                    db=db,
-                    to_email=user.email,
-                    user_name=user.name,
-                    token=raw_token,
-                )
-                if send_ok:
-                    logger.info(
-                        "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION",
-                        request_id,
-                        user.id,
-                        mask_email(user.email),
-                    )
-                else:
-                    logger.warning(
-                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION reason=dispatch_returned_false_or_mocked",
-                        request_id,
-                        user.id,
-                        mask_email(user.email),
-                    )
-            except Exception as exc:
-                logger.error(
-                    "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION error=%s",
-                    request_id,
-                    user.id,
-                    mask_email(user.email),
-                    exc,
-                )
-
             await record_audit_log(
                 db=db,
                 action="PASSWORD_RESET_UNVERIFIED_RECOVERY",
@@ -692,6 +846,59 @@ class AuthService:
                 request_id=request_id,
             )
             await db.commit()
+
+            if background_tasks:
+                logger.info(
+                    "[PASSWORD_RESET_EMAIL_SCHEDULED_BG] req_id=%s user_id=%s recipient=%s channel=EMAIL purpose=EMAIL_VERIFICATION",
+                    request_id,
+                    user.id,
+                    mask_email(user.email),
+                )
+                background_tasks.add_task(
+                    AuthService._dispatch_verification_notification,
+                    to_email=user.email,
+                    user_name=user.name,
+                    token=raw_token,
+                    user_id=str(user.id),
+                    request_id=request_id,
+                )
+            else:
+                logger.info(
+                    "[PASSWORD_RESET_EMAIL_SEND_STARTED] req_id=%s user_id=%s recipient=%s channel=EMAIL purpose=EMAIL_VERIFICATION",
+                    request_id,
+                    user.id,
+                    mask_email(user.email),
+                )
+                try:
+                    send_ok = await notification_service.send_verification_email(
+                        db=db,
+                        to_email=user.email,
+                        user_name=user.name,
+                        token=raw_token,
+                    )
+                    await db.commit()
+                    if send_ok:
+                        logger.info(
+                            "[PASSWORD_RESET_EMAIL_SEND_SUCCEEDED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION",
+                            request_id,
+                            user.id,
+                            mask_email(user.email),
+                        )
+                    else:
+                        logger.warning(
+                            "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION reason=dispatch_returned_false_or_mocked",
+                            request_id,
+                            user.id,
+                            mask_email(user.email),
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "[PASSWORD_RESET_EMAIL_SEND_FAILED] req_id=%s user_id=%s recipient=%s purpose=EMAIL_VERIFICATION error=%s",
+                        request_id,
+                        user.id,
+                        mask_email(user.email),
+                        exc,
+                    )
         else:
             if not user:
                 logger.info(
